@@ -11,11 +11,10 @@
 //! - `tasks[].resolved` and `tasks[].source` are nullable: a
 //!   `package.json` script's command depends on PM resolution, which can
 //!   fail, and a source anchor file can be undiscoverable.
-//! - `sources[].kind` uses the structured source labels (`cargo-alias`,
-//!   `just`, …) shared with `why`, not the flat `list`/`info` labels.
-//! - `overrides.pm`/`overrides.runner` are bare labels; the provenance
-//!   (`cli`/`env`/`config:…`) remains available on the flat `list`/`info`
-//!   surface.
+//! - `sources[].kind` is the source's registry label (`cargo`, `just`, …),
+//!   the same label `why` and `list` print.
+//! - `overrides` reports each setting's effective value; `pm`, `runtime` and
+//!   `source` also name the layer that set them.
 //! - `project.workspace` lists the root's workspace declarations and
 //!   members; `project.root_source` is the root itself until root-anchor
 //!   detection is modeled.
@@ -31,28 +30,33 @@ use std::path::Path;
 
 use serde::Serialize;
 
-use super::labels::structured_source_label;
+use super::labels::{PmLabel, RuntimeLabel, SourceLabel};
 use crate::chain::FailurePolicy;
-use crate::cmd::install::InstallPlan;
-use crate::cmd::run::{resolve_python_pm, select_task_entry, source_depth, source_priority};
-use crate::resolver::{
-    CollisionPolicy, FallbackPolicy, MismatchPolicy, ResolutionOverrides, ResolutionStep, Resolver,
-    ScriptPolicy,
-};
-use crate::tool::node::detect_pm_from_manifest;
-use crate::types::{
-    DetectionWarning, Ecosystem, JsRuntime, PackageManager, ProjectContext, Task, TaskRunner,
-    TaskSource,
-};
+use crate::commands::install::InstallPlan;
+use crate::commands::run::decision::{Observed, PmDecision};
+use crate::provider::Named;
+use crate::resolver::{LockfilePolicy, OverrideOrigin, ResolutionOverrides, ScriptPolicy};
+use crate::types::{DetectionWarning, ProjectContext, Task};
+use runner_core::{Ecosystem, ProviderId};
 
 /// `runner doctor --json` payload.
 #[derive(schemars::JsonSchema, Debug, Serialize)]
-#[schemars(deny_unknown_fields)]
+#[schemars(
+    deny_unknown_fields,
+    title = "runner doctor --json",
+    description = "JSON schema for `runner doctor --json`: structured diagnostic inventory with \
+                   invocation/environment provenance, per-ecosystem decisions, sources, \
+                   fqn-keyed tasks, tools, conflicts, and diagnostics.",
+    extend("$id" = super::schema_url("doctor"))
+)]
 pub(crate) struct DoctorReport<'a> {
     #[serde(rename = "$schema")]
     #[schemars(description = "URI of the JSON Schema that describes this payload.")]
     schema: String,
-    #[schemars(description = "Schema contract version for this JSON payload.")]
+    #[schemars(
+        description = "Schema contract version for this JSON payload.",
+        extend("const" = super::SCHEMA_VERSION)
+    )]
     schema_version: u32,
     #[schemars(description = "Payload discriminator; always \"runner.doctor\".")]
     kind: &'static str,
@@ -137,88 +141,80 @@ struct ProjectInfo<'a> {
     workspace: Option<super::project::WorkspaceInfo<'a>>,
 }
 
-/// The overrides in effect for this run: `--pm`, `--fallback`, the
-/// `RUNNER_*` env vars, and the `runner.toml` policy sections, reported by
-/// their labels. Where each came from (CLI, env, or config) is on the
-/// `list`/`info` surface instead.
-// Covers every field on `ResolutionOverrides` except `parent_group_open` and
-// `parent_warned`, internal runner-to-runner env markers with nothing to
-// report. `every_resolution_overrides_field_is_reported_or_excluded` (bottom of
-// this file) fails the build if a new field misses both this struct and that
-// exclusion list.
+/// The settings in effect for this run, each at its effective value.
+// Covers every field on `ResolutionOverrides` except the excluded ones listed
+// in `every_resolution_overrides_field_is_reported_or_excluded`.
 #[derive(schemars::JsonSchema, Debug, Serialize)]
 #[schemars(deny_unknown_fields)]
 struct Overrides {
-    explain: bool,
-    fallback: FallbackPolicy,
+    dry_run: bool,
+    download: DownloadReport,
     failure_policy: FailurePolicy,
-    install_pms: Vec<PackageManager>,
-    no_warnings: bool,
-    on_collision: CollisionPolicy,
-    output_grouping: OutputGrouping,
-    quiet: bool,
-    output: OutputPolicyReport,
-    on_mismatch: MismatchPolicy,
-    pm: Option<PackageManager>,
-    pm_by_ecosystem: BTreeMap<Ecosystem, PackageManager>,
-    prefer_runners: Vec<TaskRunner>,
-    prefer_sources: Vec<&'static str>,
-    runner: Option<TaskRunner>,
-    runtime: Option<JsRuntime>,
+    install_tools: bool,
+    lockfile: LockfilePolicy,
     script_policy: ScriptPolicy,
+    output: OutputReport,
+    pm: Option<Chosen<PmLabel>>,
+    runtime: Option<Chosen<RuntimeLabel>>,
+    source: Option<Chosen<SourceLabel>>,
     #[schemars(
         description = "Variable names each `env` layer sets, narrowest last. Values are withheld: \
                        this payload is meant to be pasted into a bug report."
     )]
     env: EnvNames,
-    #[schemars(
-        description = "`[tools.<name>].install`, the operations `runner install` runs for each \
-                       tool, in order."
-    )]
-    tool_install: BTreeMap<String, Vec<String>>,
-    task_source_pins: BTreeMap<String, Vec<&'static str>>,
+    #[schemars(description = "The provider choices each `[tasks.<name>]` table makes.")]
+    tasks: BTreeMap<String, TaskReport>,
+}
+
+/// A chosen provider and the layer that chose it.
+#[derive(schemars::JsonSchema, Debug, Serialize)]
+#[schemars(deny_unknown_fields)]
+struct Chosen<T> {
+    value: T,
+    #[schemars(extend("enum" = ["cli", "env", "task-config", "config"]))]
+    origin: &'static str,
+}
+
+impl<T> Chosen<T> {
+    const fn new(value: T, origin: &OverrideOrigin) -> Self {
+        Self {
+            value,
+            origin: match origin {
+                OverrideOrigin::CliFlag => "cli",
+                OverrideOrigin::EnvVar => "env",
+                OverrideOrigin::TaskConfig { .. } => "task-config",
+                OverrideOrigin::ConfigFile { .. } => "config",
+            },
+        }
+    }
 }
 
 #[derive(schemars::JsonSchema, Debug, Serialize)]
 #[schemars(deny_unknown_fields)]
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "serialized independent output axes"
-)]
-struct OutputPolicyReport {
-    #[schemars(extend("enum" = ["off", "quiet", "very-quiet", "silent", "mute"]))]
-    level: &'static str,
-    progress: bool,
-    warnings: bool,
-    errors: bool,
-    groups: bool,
-    task_timing: bool,
-    summary: bool,
-    fatal_errors: bool,
-    #[schemars(extend("enum" = ["normal", "quiet", "reduced"]))]
-    host_diagnostics: &'static str,
-    #[schemars(extend("enum" = ["inherit", "stderr"]))]
-    host_stream: &'static str,
+struct DownloadReport {
+    value: crate::config::Download,
+    #[schemars(description = "Whether a layer set it; otherwise the interactive default applies.")]
+    explicit: bool,
 }
 
-/// The three grouping toggles bundled so [`Overrides`] doesn't tip
-/// clippy's bool-count lint; each mirrors a same-named field on
-/// [`ResolutionOverrides`].
 #[derive(schemars::JsonSchema, Debug, Serialize)]
-#[schemars(
-    deny_unknown_fields,
-    description = "Whether task output is grouped into collapsible blocks, under GitHub Actions \
-                   and elsewhere."
-)]
-struct OutputGrouping {
-    /// Broad GitHub Actions grouping switch (`[github].group_output`).
-    group_output: bool,
-    /// Group parallel output under GitHub Actions
-    /// (`[github].group_parallel`).
-    github_group_parallel: bool,
-    /// Group parallel output outside GitHub Actions
-    /// (`[parallel].grouped`).
-    parallel_grouped: bool,
+#[schemars(deny_unknown_fields)]
+struct OutputReport {
+    #[schemars(extend("enum" = ["off", "quiet", "very-quiet", "silent", "mute"]))]
+    quiet: &'static str,
+    #[serde(flatten)]
+    runner: crate::tool::RunnerOutputPolicy,
+    #[schemars(extend("enum" = ["normal", "quiet", "reduced"]))]
+    tool: &'static str,
+    parallel_buffer: Option<bool>,
+}
+
+#[derive(schemars::JsonSchema, Debug, Serialize)]
+#[schemars(deny_unknown_fields)]
+struct TaskReport {
+    source: Option<SourceLabel>,
+    pm: Option<PmLabel>,
+    runtime: Option<RuntimeLabel>,
 }
 
 /// One detected ecosystem and the PM decision made for it.
@@ -229,10 +225,12 @@ struct EcosystemEntry {
     name: &'static str,
     root: String,
     selected_package_manager: Option<&'static str>,
-    #[schemars(description = "Detection evidence. Node carries the full signal set \
-                              (lockfile/manifest/PATH probe/shim classification, keyed by tool \
-                              with the shim manager as data); other ecosystems list their \
-                              detected package managers.")]
+    #[schemars(
+        description = "Detection evidence. An ecosystem whose task source package managers \
+                       dispatch carries that source's signals (lockfile, manifest, PATH probe, \
+                       shims keyed by tool with the shim manager as data); other ecosystems list \
+                       their detected package managers."
+    )]
     signals: serde_json::Value,
 }
 
@@ -252,8 +250,6 @@ enum Confidence {
     High,
     /// Inferred: PATH probe found a usable binary.
     Medium,
-    /// Legacy `--fallback npm` default with no signal at all.
-    Low,
     /// Resolution failed.
     None,
 }
@@ -266,7 +262,7 @@ struct SourceEntry<'a> {
     #[schemars(description = "Stable source identity: `src:<scope>:<kind>`.")]
     id: String,
     #[schemars(description = "Structured source label (same convention as `why`).")]
-    kind: &'static str,
+    kind: SourceLabel,
     #[schemars(
         description = "Workspace member identity (`name`, `path`) for member sources; null for \
                        root sources."
@@ -311,13 +307,6 @@ struct DoctorTask<'a> {
     resolved: Option<String>,
     #[schemars(description = "`root`, or the workspace member name the task belongs to.")]
     scope: &'a str,
-    #[schemars(
-        description = "True when runner can run this task without its source's primary tool. Only \
-                       deno tasks runner can execute via the embedded task shell (leaf command, \
-                       no `dependencies`, no `deno` invocation) qualify today; all other sources \
-                       are false."
-    )]
-    self_executable: bool,
     source: Option<String>,
     source_pointer: Option<String>,
 }
@@ -417,12 +406,12 @@ enum Severity {
 /// streams.
 #[derive(schemars::JsonSchema, Debug, Serialize)]
 #[schemars(deny_unknown_fields)]
-struct Diagnostic {
+pub(crate) struct Diagnostic {
     #[schemars(description = "Stable warning category (the warning's source subsystem).")]
     code: &'static str,
-    message: String,
+    pub(crate) message: String,
     severity: Severity,
-    source: Option<&'static str>,
+    pub(crate) source: Option<&'static str>,
     task: Option<String>,
 }
 
@@ -444,29 +433,14 @@ impl<'a> DoctorReport<'a> {
         overrides: &ResolutionOverrides,
         resolve_shims: bool,
     ) -> Self {
-        let node_pm = Resolver::new(ctx, overrides).resolve_node_pm();
-        let plan = crate::cmd::install::plan_install(ctx, overrides);
+        let observed = Observed::observe(ctx, overrides);
+        let decisions = Decisions::from_observed(ctx, &observed);
+        let plan = crate::commands::install::plan_install(ctx, overrides);
 
-        // A collision is the install plan's verdict, not a detection fact, so
-        // it joins the diagnostics here rather than riding in `ctx.warnings`
-        // where every command would flush it. A plan that refuses to resolve
-        // reports as a diagnostic too: `doctor` has to survive the
-        // configuration it exists to explain.
+        // A plan that refuses to resolve reports as a diagnostic: `doctor`
+        // has to survive the configuration it exists to explain.
         let plan_diagnostics: Vec<Diagnostic> = match &plan {
-            Ok(plan) => plan
-                .collisions
-                .iter()
-                .map(|collision| Diagnostic {
-                    code: "install",
-                    message: crate::cmd::install::collision_warning(
-                        collision.dir,
-                        &collision.writers,
-                    ),
-                    severity: Severity::Warning,
-                    source: Some("install"),
-                    task: None,
-                })
-                .collect(),
+            Ok(_) => Vec::new(),
             Err(err) => vec![Diagnostic {
                 code: "install",
                 message: err.to_string(),
@@ -478,10 +452,10 @@ impl<'a> DoctorReport<'a> {
         let diagnostics = ctx
             .warnings
             .iter()
-            .chain(node_pm.as_ref().map_or(&[][..], |d| &d.warnings))
+            .chain(decisions.warnings.iter())
             .map(diagnostic)
             .chain(plan_diagnostics)
-            .chain(mise_diagnostics(ctx))
+            .chain(provider_diagnostics(ctx, overrides))
             .collect();
 
         Self {
@@ -492,7 +466,7 @@ impl<'a> DoctorReport<'a> {
             environment: environment(),
             runner: runner_info(),
             project: ProjectInfo {
-                monorepo: ctx.is_monorepo,
+                monorepo: ctx.is_monorepo(),
                 root: ctx.root.display().to_string(),
                 root_source: ctx.current_member().map_or_else(
                     || ctx.root.display().to_string(),
@@ -504,32 +478,200 @@ impl<'a> DoctorReport<'a> {
                     .map(super::project::WorkspaceInfo::from_workspace),
             },
             overrides: overrides_report(overrides),
-            ecosystems: ecosystems(ctx, overrides, &node_pm, resolve_shims),
+            ecosystems: ecosystems(ctx, observed.as_ref().ok(), &decisions, resolve_shims),
             sources: sources(ctx),
-            tasks: tasks(ctx, &node_pm, overrides),
-            tools: tools(ctx, overrides, &node_pm),
-            conflicts: conflicts(ctx, overrides, plan.as_ref().ok()),
+            tasks: tasks(ctx, overrides),
+            tools: tools(ctx, &decisions),
+            conflicts: conflicts(ctx, observed.as_ref().ok(), plan.as_ref().ok()),
             diagnostics,
-            resolution: ResolutionPolicy {
-                fqn_policy: "exact-only",
-                precedence: vec![
-                    "source-priority",
-                    "source-depth",
-                    "display-order",
-                    "alias-last",
-                ],
-                short_name_policy: "deterministic-precedence",
-            },
+            resolution: resolution_policy(),
         }
+    }
+}
+
+const EXAMPLE_ROOT: &str = "/path/to/project";
+
+impl DoctorReport<'static> {
+    /// The fixed report committed as `schemas/doctor.example.json`.
+    pub(crate) fn example() -> Self {
+        Self {
+            schema: super::schema_url("doctor"),
+            schema_version: super::SCHEMA_VERSION,
+            kind: "runner.doctor",
+            invocation: Invocation {
+                argv: ["runner", "doctor", "--json"].map(String::from).to_vec(),
+                cwd: EXAMPLE_ROOT.to_string(),
+                started_at: "2026-01-01T00:00:00Z".to_string(),
+            },
+            environment: Environment {
+                arch: "x86_64",
+                os: "linux",
+                path_entries: vec!["/usr/local/bin".to_string(), "/usr/bin".to_string()],
+                shell: Some("bash".to_string()),
+            },
+            runner: RunnerInfo {
+                binary: "/usr/local/bin/runner".to_string(),
+                name: "runner".to_string(),
+                version: "0.0.0",
+                schema_versions: SchemaVersions {
+                    doctor: super::SCHEMA_VERSION,
+                    list: super::SCHEMA_VERSION,
+                    why: super::SCHEMA_VERSION,
+                },
+            },
+            project: ProjectInfo {
+                monorepo: false,
+                root: EXAMPLE_ROOT.to_string(),
+                root_source: EXAMPLE_ROOT.to_string(),
+                workspace: None,
+            },
+            overrides: overrides_report(&ResolutionOverrides::default()),
+            ecosystems: vec![example_node_ecosystem()],
+            sources: vec![
+                example_source(ProviderId::PackageJson, "package.json", Some("scripts")),
+                example_source(ProviderId::Just, "justfile", None),
+            ],
+            tasks: vec![
+                example_task(
+                    ProviderId::PackageJson,
+                    "package.json",
+                    "build",
+                    "bun run build",
+                ),
+                example_task(
+                    ProviderId::PackageJson,
+                    "package.json",
+                    "fmt:update",
+                    "bun run fmt:update",
+                ),
+                example_task(ProviderId::Just, "justfile", "build", "just build"),
+            ],
+            tools: vec![
+                example_tool(DependencyKind::Runtime, "node", "24.0.0"),
+                example_tool(DependencyKind::PackageManager, "bun", "1.1.0"),
+                example_tool(DependencyKind::TaskRunner, "just", "1.36.0"),
+            ],
+            conflicts: vec![Conflict::DuplicateTaskName {
+                reason: "2 sources define `build`; package.json runs because its source has the \
+                         higher task priority"
+                    .to_string(),
+                selected: "root:package.json#build".to_string(),
+                selector: "build".to_string(),
+                severity: Severity::Info,
+                shadowed: vec!["root:just#build".to_string()],
+            }],
+            diagnostics: Vec::new(),
+            resolution: resolution_policy(),
+        }
+    }
+}
+
+fn example_node_ecosystem() -> EcosystemEntry {
+    EcosystemEntry {
+        decision: EcosystemDecision {
+            confidence: Confidence::High,
+            reason: "bun via package.json \"packageManager\"".to_string(),
+            selected: Some("bun"),
+        },
+        name: "node",
+        root: EXAMPLE_ROOT.to_string(),
+        selected_package_manager: Some("bun"),
+        signals: serde_json::to_value(super::project::SourceSignals {
+            lockfile_pm: Some("bun"),
+            manifest_pm: Some(super::project::ManifestPm {
+                pm: "bun",
+                source: "packageManager",
+                version: Some("1.1.0".to_string()),
+                on_fail: runner_core::OnFail::Ignore.label(),
+            }),
+            path_probe: [
+                ("bun", Some("/usr/bin/bun".to_string())),
+                ("npm", Some("/usr/bin/npm".to_string())),
+            ]
+            .into(),
+            shims: BTreeMap::new(),
+        })
+        .expect("signals serialize"),
+    }
+}
+
+fn example_source(
+    source: ProviderId,
+    relpath: &str,
+    task_pointer: Option<&'static str>,
+) -> SourceEntry<'static> {
+    SourceEntry {
+        exists: true,
+        id: format!("src:root:{}", source.label()),
+        kind: SourceLabel(source),
+        package: None,
+        path: format!("{EXAMPLE_ROOT}/{relpath}"),
+        relpath: relpath.to_string(),
+        scope: "root",
+        task_pointer,
+    }
+}
+
+fn example_task(
+    source: ProviderId,
+    relpath: &str,
+    name: &'static str,
+    resolved: &str,
+) -> DoctorTask<'static> {
+    DoctorTask {
+        aliases: Vec::new(),
+        cwd: EXAMPLE_ROOT.to_string(),
+        definition: None,
+        dependencies: Vec::new(),
+        description: None,
+        fqn: super::labels::fqn_of("root", source, name),
+        is_alias: false,
+        name,
+        resolved: Some(resolved.to_string()),
+        scope: "root",
+        source: Some(format!("{EXAMPLE_ROOT}/{relpath}")),
+        source_pointer: Some(
+            super::labels::task_container_key(source)
+                .map_or_else(|| name.to_string(), |key| format!("{key}.{name}")),
+        ),
+    }
+}
+
+fn example_tool(kind: DependencyKind, name: &'static str, version: &str) -> Tool {
+    Tool {
+        id: format!("tool:{}:{name}", kind.label()),
+        kind,
+        name,
+        probe: ToolProbe::Found {
+            path: format!("/usr/bin/{name}"),
+            version: Some(version.to_string()),
+        },
+        required: true,
+    }
+}
+
+fn resolution_policy() -> ResolutionPolicy {
+    ResolutionPolicy {
+        fqn_policy: "exact-only",
+        precedence: vec![
+            "nearest-scope",
+            "qualified-source",
+            "chosen-source",
+            "chosen-dispatcher",
+            "package-manager",
+            "dispatch-order",
+            "task-priority",
+            "provider",
+            "alias-last",
+        ],
+        short_name_policy: "deterministic-precedence",
     }
 }
 
 fn invocation() -> Invocation {
     Invocation {
         argv: std::env::args().collect(),
-        cwd: std::env::current_dir()
-            .map(|d| d.display().to_string())
-            .unwrap_or_default(),
+        cwd: std::env::current_dir().map_or_default(|d| d.display().to_string()),
         started_at: rfc3339_utc_now(),
     }
 }
@@ -538,13 +680,11 @@ fn environment() -> Environment {
     Environment {
         arch: std::env::consts::ARCH,
         os: std::env::consts::OS,
-        path_entries: std::env::var_os("PATH")
-            .map(|path| {
-                std::env::split_paths(&path)
-                    .map(|entry| entry.display().to_string())
-                    .collect()
-            })
-            .unwrap_or_default(),
+        path_entries: std::env::var_os("PATH").map_or_default(|path| {
+            std::env::split_paths(&path)
+                .map(|entry| entry.display().to_string())
+                .collect()
+        }),
         shell: std::env::var("SHELL").ok(),
     }
 }
@@ -577,217 +717,153 @@ fn env_names(layers: &BTreeMap<String, BTreeMap<String, String>>) -> BTreeMap<St
 }
 
 fn overrides_report(overrides: &ResolutionOverrides) -> Overrides {
+    let output = overrides.output_for(None);
     Overrides {
-        explain: overrides.explain,
-        fallback: overrides.fallback,
+        dry_run: overrides.dry_run,
+        download: DownloadReport {
+            value: overrides.download.value,
+            explicit: overrides.download.explicit,
+        },
         failure_policy: overrides.failure_policy,
-        install_pms: overrides.install_pms.clone(),
-        no_warnings: overrides.no_warnings,
-        on_collision: overrides.on_collision,
-        output_grouping: OutputGrouping {
-            group_output: overrides.group_output,
-            github_group_parallel: overrides.github_group_parallel,
-            parallel_grouped: overrides.parallel_grouped,
-        },
-        quiet: overrides.quiet_level != crate::tool::QuietLevel::Off,
-        output: OutputPolicyReport {
-            level: overrides.quiet_level.label(),
-            progress: overrides.shows_progress(),
-            warnings: overrides.shows_warnings(),
-            errors: overrides.shows_errors(),
-            groups: overrides.emits_groups(),
-            task_timing: overrides.shows_task_timing(),
-            summary: overrides.shows_summary(),
-            fatal_errors: overrides.shows_fatal_errors(),
-            host_diagnostics: overrides.output_policy.host_diagnostics.label(),
-            host_stream: if overrides.host_stream_invocation_explicit {
-                overrides.host_stream
-            } else {
-                overrides.host_stream_config
-            }
-            .label(),
-        },
-        on_mismatch: overrides.on_mismatch,
-        pm: overrides.pm.as_ref().map(|o| o.pm),
-        pm_by_ecosystem: overrides
-            .pm_by_ecosystem
-            .iter()
-            .map(|(&eco, o)| (eco, o.pm))
-            .collect(),
-        prefer_runners: overrides.prefer_runners.clone(),
-        prefer_sources: overrides
-            .prefer_sources
-            .iter()
-            .map(|&source| structured_source_label(source))
-            .collect(),
-        runner: overrides.runner.as_ref().map(|o| o.runner),
-        runtime: overrides.runtime.as_ref().map(|o| o.runtime),
+        install_tools: overrides.install_tools,
+        lockfile: overrides.lockfile,
         script_policy: overrides.script_policy,
+        output: OutputReport {
+            quiet: overrides.quiet_level.label(),
+            runner: output.runner,
+            tool: output.tool.label(),
+            parallel_buffer: overrides.output.buffer,
+        },
+        pm: overrides
+            .pm
+            .as_ref()
+            .map(|chosen| Chosen::new(PmLabel(chosen.pm), &chosen.origin)),
+        runtime: overrides
+            .runtime
+            .as_ref()
+            .map(|chosen| Chosen::new(RuntimeLabel(chosen.runtime), &chosen.origin)),
+        source: overrides
+            .source
+            .as_ref()
+            .map(|chosen| Chosen::new(SourceLabel(chosen.source), &chosen.origin)),
         env: EnvNames {
             project: overrides.env.project.keys().cloned().collect(),
             tool: env_names(&overrides.env.tool),
             task: env_names(&overrides.env.task),
         },
-        tool_install: overrides.tool_install.clone(),
-        task_source_pins: overrides
-            .task_source_overrides
+        tasks: overrides
+            .tasks
             .iter()
-            .map(|(name, sources)| {
+            .map(|(name, task)| {
                 (
                     name.clone(),
-                    sources
-                        .iter()
-                        .map(|&source| structured_source_label(source))
-                        .collect(),
+                    TaskReport {
+                        source: task.source.map(SourceLabel),
+                        pm: task.pm.map(PmLabel),
+                        runtime: task.runtime.map(RuntimeLabel),
+                    },
                 )
             })
             .collect(),
     }
 }
 
+/// The package-manager decision for each task source package managers dispatch.
+pub(crate) struct Decisions {
+    sources: Vec<(ProviderId, Option<PmDecision>)>,
+    error: Option<String>,
+    warnings: Vec<DetectionWarning>,
+}
+
+impl Decisions {
+    pub(crate) fn from_observed(
+        ctx: &ProjectContext,
+        observed: &std::io::Result<Observed>,
+    ) -> Self {
+        let sources = super::project::dispatched_sources(ctx, observed.as_ref().ok());
+        let Ok(observed) = observed else {
+            return Self {
+                sources: sources.into_iter().map(|source| (source, None)).collect(),
+                error: observed.as_ref().err().map(ToString::to_string),
+                warnings: Vec::new(),
+            };
+        };
+        let sources: Vec<(ProviderId, Option<PmDecision>)> = sources
+            .into_iter()
+            .map(|source| (source, observed.decision(source)))
+            .collect();
+        let warnings = sources
+            .iter()
+            .filter_map(|(_, decision)| decision.as_ref())
+            .flat_map(|decision| decision.warnings(&observed.project))
+            .collect();
+        Self {
+            sources,
+            error: None,
+            warnings,
+        }
+    }
+
+    /// The dispatched source of `ecosystem` and its decision.
+    fn for_ecosystem(&self, ecosystem: Ecosystem) -> Option<(ProviderId, Option<&PmDecision>)> {
+        self.sources
+            .iter()
+            .find(|(source, _)| source.ecosystem() == ecosystem)
+            .map(|(source, decision)| (*source, decision.as_ref()))
+    }
+}
+
 fn ecosystems(
     ctx: &ProjectContext,
-    overrides: &ResolutionOverrides,
-    node_pm: &Result<crate::resolver::ResolvedPm, crate::resolver::ResolveError>,
+    observed: Option<&Observed>,
+    decisions: &Decisions,
     resolve_shims: bool,
 ) -> Vec<EcosystemEntry> {
     let mut seen = Vec::new();
-    for pm in &ctx.package_managers {
-        let eco = pm.ecosystem();
+    let dispatched = decisions.sources.iter().map(|(source, _)| *source);
+    for eco in ctx
+        .package_managers()
+        .into_iter()
+        .chain(dispatched)
+        .map(Named::ecosystem)
+    {
         if !seen.contains(&eco) {
             seen.push(eco);
         }
     }
 
-    // Seeding from detected `package_managers` alone misses every Node
-    // resolution that doesn't leave a lockfile-detected PM behind
-    // (manifest `packageManager` without a lockfile, PATH-probe, npm
-    // fallback, override). In those cases `tasks` still resolves
-    // `package.json` scripts via `npm run`, so dropping Node here would
-    // emit an internally inconsistent document. Same predicate gates the
-    // node runtime entry in `tools`.
-    if has_node_context(ctx, node_pm) && !seen.contains(&Ecosystem::Node) {
-        seen.push(Ecosystem::Node);
-    }
-    // Same reasoning as the Node patch-in above: a `[project.scripts]`
-    // task can resolve via `--pm`/`[pm].python`/detected PM without a
-    // lockfile-detected PM in `package_managers`.
-    if has_python_context(ctx, overrides) && !seen.contains(&Ecosystem::Python) {
-        seen.push(Ecosystem::Python);
-    }
-
     seen.into_iter()
-        .map(|eco| match eco {
-            Ecosystem::Node => node_ecosystem(ctx, node_pm, resolve_shims),
-            Ecosystem::Python => python_ecosystem(ctx, overrides),
-            other => single_pm_ecosystem(ctx, other),
+        .map(|eco| match decisions.for_ecosystem(eco) {
+            Some((source, decision)) => {
+                let signals = super::project::source_signals(ctx, observed, source, resolve_shims);
+                decided_ecosystem(
+                    ctx,
+                    source,
+                    decision,
+                    decisions.error.as_deref(),
+                    serde_json::to_value(signals).unwrap_or_default(),
+                )
+            }
+            None => single_pm_ecosystem(ctx, eco),
         })
         .collect()
 }
 
-/// Whether the project carries Node context, considering resolver and
-/// task signals, not just lockfile-detected `package_managers`. A Node
-/// PM decision (`resolve_node_pm` Ok), a detected Node-ecosystem PM, or
-/// any `package.json`-sourced task each count. Gates Node inclusion in
-/// both [`ecosystems`] and [`tools`] so the two surfaces never
-/// disagree with what `tasks` resolves.
-pub(crate) fn has_node_context(
+/// An ecosystem whose `source` tasks are dispatched by a chosen package manager.
+fn decided_ecosystem(
     ctx: &ProjectContext,
-    node_pm: &Result<crate::resolver::ResolvedPm, crate::resolver::ResolveError>,
-) -> bool {
-    node_pm.is_ok()
-        || ctx
-            .package_managers
-            .iter()
-            .any(|pm| pm.ecosystem() == Ecosystem::Node)
-        || ctx
-            .tasks
-            .iter()
-            .any(|t| matches!(t.source, TaskSource::PackageJson))
-}
-
-/// Whether the project carries Python context, considering resolver and
-/// task signals, not just lockfile-detected `package_managers`. Mirrors
-/// [`has_node_context`]; gates Python inclusion in both [`ecosystems`]
-/// and [`tools`] so neither surface disagrees with what `tasks`
-/// resolves.
-fn has_python_context(ctx: &ProjectContext, overrides: &ResolutionOverrides) -> bool {
-    resolve_python_pm(ctx, overrides).is_some()
-        || ctx
-            .package_managers
-            .iter()
-            .any(|pm| pm.ecosystem() == Ecosystem::Python)
-        || ctx
-            .tasks
-            .iter()
-            .any(|t| matches!(t.source, TaskSource::PyprojectScripts))
-}
-
-fn node_ecosystem(
-    ctx: &ProjectContext,
-    node_pm: &Result<crate::resolver::ResolvedPm, crate::resolver::ResolveError>,
-    resolve_shims: bool,
+    source: ProviderId,
+    decision: Option<&PmDecision>,
+    error: Option<&str>,
+    signals: serde_json::Value,
 ) -> EcosystemEntry {
-    let (decision, selected) = match node_pm {
-        Ok(decision) => (
-            EcosystemDecision {
-                confidence: confidence_for_step(&decision.via),
-                reason: decision.describe(),
-                selected: Some(decision.pm.label()),
-            },
-            Some(decision.pm.label()),
-        ),
-        Err(err) => (
-            EcosystemDecision {
-                confidence: Confidence::None,
-                reason: format!("{err}"),
-                selected: None,
-            },
-            None,
-        ),
-    };
-
-    let manifest_decl = detect_pm_from_manifest(&ctx.root);
-    let probes = super::project::probe_signals(&ctx.root, resolve_shims);
-    // Shims are keyed by tool and carry the shim *manager* as data, not
-    // as the field name. Volta is merely the first manager the prober
-    // classifies; asdf/mise/proto entries slot in without a contract
-    // change. (The flat `list`/`info` shape's `volta_shims` spelling is
-    // frozen; only this structured report gets the generic shape.)
-    let shims = probes
-        .volta_shims
-        .iter()
-        .map(|(name, shim)| {
-            (
-                (*name).to_string(),
-                serde_json::json!({ "manager": "volta", "resolved": shim.resolved }),
-            )
-        })
-        .collect::<serde_json::Map<_, _>>();
-    let signals = serde_json::json!({
-        "lockfile_pm": ctx.primary_node_pm().map(PackageManager::label),
-        "manifest_pm": manifest_decl.as_ref().map(|d| d.pm.label()),
-        "path_probe": probes.path_probe,
-        "shims": shims,
-    });
-
-    EcosystemEntry {
-        decision,
-        name: "node",
-        root: ctx.root.display().to_string(),
-        selected_package_manager: selected,
-        signals,
-    }
-}
-
-fn python_ecosystem(ctx: &ProjectContext, overrides: &ResolutionOverrides) -> EcosystemEntry {
-    let resolved = resolve_python_pm(ctx, overrides);
-    let (decision, selected) = resolved.map_or_else(
+    let (decision, selected) = decision.map_or_else(
         || {
             (
                 EcosystemDecision {
                     confidence: Confidence::None,
-                    reason: "no Python package manager detected".to_string(),
+                    reason: error
+                        .map_or_else(|| crate::provider::no_dispatcher(source), ToOwned::to_owned),
                     selected: None,
                 },
                 None,
@@ -797,7 +873,11 @@ fn python_ecosystem(ctx: &ProjectContext, overrides: &ResolutionOverrides) -> Ec
             let label = decision.pm.label();
             (
                 EcosystemDecision {
-                    confidence: Confidence::High,
+                    confidence: if decision.probed() {
+                        Confidence::Medium
+                    } else {
+                        Confidence::High
+                    },
                     reason: decision.describe(),
                     selected: Some(label),
                 },
@@ -808,18 +888,18 @@ fn python_ecosystem(ctx: &ProjectContext, overrides: &ResolutionOverrides) -> Ec
 
     EcosystemEntry {
         decision,
-        name: "python",
+        name: source.ecosystem().label(),
         root: ctx.root.display().to_string(),
         selected_package_manager: selected,
-        signals: detected_pm_signals(ctx, Ecosystem::Python),
+        signals,
     }
 }
 
-/// Single-PM ecosystems (rust/go/deno/ruby/php): the detected manager
-/// *is* the decision; there is no competing-PM resolution chain.
+/// An ecosystem without a dispatched task source: the detected manager
+/// *is* the decision.
 fn single_pm_ecosystem(ctx: &ProjectContext, eco: Ecosystem) -> EcosystemEntry {
     let selected = ctx
-        .package_managers
+        .package_managers()
         .iter()
         .find(|pm| pm.ecosystem() == eco)
         .map(|pm| pm.label());
@@ -836,29 +916,14 @@ fn single_pm_ecosystem(ctx: &ProjectContext, eco: Ecosystem) -> EcosystemEntry {
         name: eco.label(),
         root: ctx.root.display().to_string(),
         selected_package_manager: selected,
-        signals: detected_pm_signals(ctx, eco),
-    }
-}
-
-fn detected_pm_signals(ctx: &ProjectContext, eco: Ecosystem) -> serde_json::Value {
-    serde_json::json!({
-        "package_managers": ctx
-            .package_managers
-            .iter()
-            .filter(|pm| pm.ecosystem() == eco)
-            .map(|pm| pm.label())
-            .collect::<Vec<_>>(),
-    })
-}
-
-const fn confidence_for_step(step: &ResolutionStep) -> Confidence {
-    match step {
-        ResolutionStep::Override(_)
-        | ResolutionStep::ManifestPackageManager
-        | ResolutionStep::ManifestDevEngines { .. }
-        | ResolutionStep::Lockfile => Confidence::High,
-        ResolutionStep::PathProbe { .. } => Confidence::Medium,
-        ResolutionStep::LegacyNpmFallback => Confidence::Low,
+        signals: serde_json::json!({
+            "package_managers": ctx
+                .package_managers()
+                .iter()
+                .filter(|pm| pm.ecosystem() == eco)
+                .map(|pm| pm.label())
+                .collect::<Vec<_>>(),
+        }),
     }
 }
 
@@ -876,8 +941,8 @@ fn sources(ctx: &ProjectContext) -> Vec<SourceEntry<'_>> {
     seen.into_iter()
         .map(|task| {
             let source = task.source;
-            let kind = structured_source_label(source);
-            let anchor = super::labels::source_anchor(source, task.dir(&ctx.root));
+            let kind = SourceLabel(source);
+            let anchor = task.detail.source.clone();
             let path = anchor
                 .as_ref()
                 .map_or_else(String::new, |p| p.display().to_string());
@@ -886,7 +951,7 @@ fn sources(ctx: &ProjectContext) -> Vec<SourceEntry<'_>> {
             });
             SourceEntry {
                 exists: anchor.as_ref().is_some_and(|p| p.is_file()),
-                id: format!("src:{}:{kind}", task.scope()),
+                id: format!("src:{}:{}", task.scope(), source.label()),
                 kind,
                 package: task
                     .member
@@ -895,33 +960,14 @@ fn sources(ctx: &ProjectContext) -> Vec<SourceEntry<'_>> {
                 path,
                 relpath,
                 scope: task.scope(),
-                task_pointer: task_container_key(source),
+                task_pointer: super::labels::task_container_key(source),
             }
         })
         .collect()
 }
 
-fn tasks<'a>(
-    ctx: &'a ProjectContext,
-    node_pm: &Result<crate::resolver::ResolvedPm, crate::resolver::ResolveError>,
-    overrides: &ResolutionOverrides,
-) -> Vec<DoctorTask<'a>> {
-    let node_pm_label = node_pm.as_ref().ok().map(|d| d.pm.label());
-    let python_pm_label = resolve_python_pm(ctx, overrides).map(|d| d.pm.label());
-    let runtime = overrides.js_runtime();
-
-    // `anchor_file` walks the filesystem; resolve each distinct
-    // (scope, source) pair once instead of once per task.
-    let mut anchors: std::collections::HashMap<(&str, TaskSource), Option<String>> =
-        std::collections::HashMap::new();
-    for task in &ctx.tasks {
-        anchors
-            .entry((task.scope(), task.source))
-            .or_insert_with(|| {
-                super::labels::source_anchor(task.source, task.dir(&ctx.root))
-                    .map(|p| p.display().to_string())
-            });
-    }
+fn tasks<'a>(ctx: &'a ProjectContext, overrides: &ResolutionOverrides) -> Vec<DoctorTask<'a>> {
+    let prepared = crate::commands::run::core::prepare(ctx, overrides, "");
 
     ctx.tasks
         .iter()
@@ -943,106 +989,66 @@ fn tasks<'a>(
             fqn: super::labels::fqn(task),
             is_alias: task.alias_of.is_some(),
             name: &task.name,
-            resolved: super::labels::resolved_command(
-                task,
-                runtime,
-                node_pm_label,
-                python_pm_label,
-            ),
+            resolved: prepared
+                .as_ref()
+                .ok()
+                .and_then(|prepared| {
+                    prepared
+                        .preview(ctx, overrides, &super::labels::fqn(task))
+                        .ok()
+                })
+                .and_then(|(_, dispatch)| match dispatch {
+                    runner_core::Dispatch::Plan(plan) => {
+                        Some(super::labels::planned_command(&plan))
+                    }
+                    runner_core::Dispatch::Builtin(_) => None,
+                }),
             scope: task.scope(),
-            self_executable: deno_task_self_executable(ctx, task),
-            source: anchors.get(&(task.scope(), task.source)).cloned().flatten(),
+            source: task.detail.source.as_ref().map(|p| p.display().to_string()),
             source_pointer: super::labels::source_pointer(task),
         })
         .collect()
 }
 
-/// Whether runner can run `task` without its source's primary tool.
-///
-/// Only deno tasks that runner can drive through the embedded task shell
-/// (leaf command, no `dependencies`, no `deno` invocation) qualify; every
-/// other source has no in-process fallback and is therefore `false`.
-fn deno_task_self_executable(ctx: &ProjectContext, task: &Task) -> bool {
-    if task.source != TaskSource::DenoJson {
-        return false;
-    }
-    crate::tool::deno::find_config_upwards(task.dir(&ctx.root))
-        .and_then(|config| crate::tool::deno_exec::plan(&config, &task.name))
-        .is_some_and(|plan| plan.self_executable())
-}
-
-/// Container key holding tasks inside the source file.
-const fn task_container_key(source: TaskSource) -> Option<&'static str> {
-    match source {
-        TaskSource::CargoAliases => Some("alias"),
-        TaskSource::PackageJson => Some("scripts"),
-        TaskSource::DenoJson
-        | TaskSource::TurboJson
-        | TaskSource::Taskfile
-        | TaskSource::MiseToml => Some("tasks"),
-        TaskSource::BaconToml => Some("jobs"),
-        TaskSource::PyprojectScripts => Some("project.scripts"),
-        TaskSource::Makefile | TaskSource::Justfile | TaskSource::GoPackage => None,
-    }
-}
-
-fn tools(
-    ctx: &ProjectContext,
-    overrides: &ResolutionOverrides,
-    node_pm: &Result<crate::resolver::ResolvedPm, crate::resolver::ResolveError>,
-) -> Vec<Tool> {
+fn tools(ctx: &ProjectContext, decisions: &Decisions) -> Vec<Tool> {
     let path = std::env::var_os("PATH").unwrap_or_default();
     let pathext = std::env::var_os("PATHEXT");
     let pathext_ref = pathext.as_deref();
 
     let mut tools = Vec::new();
 
-    if has_node_context(ctx, node_pm) {
-        tools.push(probe_tool(
-            "node",
-            DependencyKind::Runtime,
-            ctx.current_node
-                .as_deref()
-                .map(|v| v.trim_start_matches('v').to_string()),
-            true,
-            &path,
-            pathext_ref,
-        ));
+    let runtimes = ctx.runtime_versions();
+    let mut ecosystems: Vec<Ecosystem> = Vec::new();
+    for (source, _) in &decisions.sources {
+        if !ecosystems.contains(&source.ecosystem()) {
+            ecosystems.push(source.ecosystem());
+        }
     }
-    // Same reasoning as the node runtime probe above: a resolved
-    // `uv run <task>` must never reference an interpreter the tools
-    // surface claims absent.
-    if has_python_context(ctx, overrides) {
-        use crate::tool::python::PYTHON_BIN;
-
-        tools.push(probe_tool(
-            PYTHON_BIN,
-            DependencyKind::Runtime,
-            None,
-            true,
-            &path,
-            pathext_ref,
-        ));
-    }
-
-    // Deno is required only when at least one deno task can't be
-    // self-executed (it has dependencies or invokes `deno`); a project
-    // whose deno tasks all run through the embedded shell does not need
-    // the binary. Every other tool has no in-process fallback.
-    let deno_required = ctx
-        .tasks
-        .iter()
-        .filter(|task| task.source == TaskSource::DenoJson)
-        .any(|task| !deno_task_self_executable(ctx, task));
-
-    for pm in &ctx.package_managers {
-        let required = if *pm == PackageManager::Deno {
-            deno_required
-        } else {
-            true
+    for interpreter in runner_providers::REGISTRY.iter().filter(|provider| {
+        provider.kind.contains(runner_core::Kind::RUNTIME)
+            && !provider.kind.intersects(runner_core::Kind::PACKAGE_MANAGER)
+            && ecosystems.contains(&provider.ecosystem)
+    }) {
+        let Some(program) = interpreter.program else {
+            continue;
         };
         tools.push(probe_tool(
-            pm_binary_name(*pm),
+            program,
+            DependencyKind::Runtime,
+            runtimes
+                .iter()
+                .find(|runtime| runtime.runtime == interpreter.id)
+                .and_then(|runtime| runtime.current.clone()),
+            true,
+            &path,
+            pathext_ref,
+        ));
+    }
+
+    for pm in &ctx.package_managers() {
+        let required = true;
+        tools.push(probe_tool(
+            pm.provider().program.unwrap_or_else(|| pm.label()),
             DependencyKind::PackageManager,
             None,
             required,
@@ -1050,7 +1056,7 @@ fn tools(
             pathext_ref,
         ));
     }
-    for runner in &ctx.task_runners {
+    for runner in &ctx.task_runners() {
         tools.push(probe_tool(
             runner.label(),
             DependencyKind::TaskRunner,
@@ -1062,15 +1068,6 @@ fn tools(
     }
 
     tools
-}
-
-/// Binary actually probed for a PM. Labels and binaries coincide except
-/// Bundler, whose CLI is `bundle`.
-const fn pm_binary_name(pm: PackageManager) -> &'static str {
-    match pm {
-        PackageManager::Bundler => "bundle",
-        _ => pm.label(),
-    }
 }
 
 fn probe_tool(
@@ -1128,7 +1125,7 @@ fn probe_tool_version(binary: &Path) -> Option<String> {
 
 fn conflicts(
     ctx: &ProjectContext,
-    overrides: &ResolutionOverrides,
+    observed: Option<&Observed>,
     plan: Option<&InstallPlan>,
 ) -> Vec<Conflict> {
     // Grouped per scope: root and member tasks sharing a name are not in
@@ -1144,18 +1141,19 @@ fn conflicts(
     let duplicate_names = by_name
         .into_iter()
         .filter(|(_, group)| group.len() > 1)
-        .map(|((_, name), group)| {
-            let selected = select_task_entry(ctx, overrides, &group);
+        .filter_map(|((_, name), group)| {
+            let observed = observed?;
+            let selected = observed.winner(ctx, &group)?;
+            let ranked = observed.ranked(ctx, &group);
             let fqn_of = |task: &Task| super::labels::fqn(task);
-            Conflict::DuplicateTaskName {
-                reason: format!(
-                    "{count} sources define `{name}`; lowest (source_priority={priority}, \
-                     source_depth={depth}, display_order={order}, alias-last) key wins",
-                    count = group.len(),
-                    priority = source_priority(overrides, selected.source),
-                    depth = display_depth(source_depth(ctx, selected.source)),
-                    order = selected.source.display_order(),
-                ),
+            let reason = format!(
+                "{count} sources define `{name}`; {source} runs because {why}",
+                count = group.len(),
+                source = selected.source.label(),
+                why = crate::commands::run::core::rank_reason(&ranked),
+            );
+            Some(Conflict::DuplicateTaskName {
+                reason,
                 selected: fqn_of(selected),
                 selector: selected.display_name().into_owned(),
                 severity: Severity::Info,
@@ -1164,7 +1162,7 @@ fn conflicts(
                     .filter(|task| !std::ptr::eq(**task, selected))
                     .map(|task| fqn_of(task))
                     .collect(),
-            }
+            })
         });
 
     duplicate_names
@@ -1184,8 +1182,8 @@ fn install_dir_conflicts(plan: &InstallPlan) -> Vec<Conflict> {
         .map(|shadow| Conflict::InstallDirCollision {
             reason: format!(
                 "{} and {} both install into {}/; the package manager resolved for the ecosystem \
-                 installs it and the other is skipped. List both in `[install].pms` to run them \
-                 anyway.",
+                 installs it and the other is skipped. Enable both with `[tools.<name>].install = \
+                 true` to run them sequentially.",
                 shadow.winner.label(),
                 shadow.loser.label(),
                 shadow.dir,
@@ -1198,41 +1196,54 @@ fn install_dir_conflicts(plan: &InstallPlan) -> Vec<Conflict> {
         .collect()
 }
 
-fn display_depth(depth: usize) -> String {
-    if depth == usize::MAX {
-        "unresolved".to_string()
-    } else {
-        depth.to_string()
+/// Run the health checks declared by present providers.
+pub(crate) fn provider_diagnostics(
+    ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
+) -> Vec<Diagnostic> {
+    let tree = crate::commands::run::core::tree(ctx);
+    let policy = crate::commands::run::core::policy(overrides, None);
+    let project = match crate::commands::run::core::project(ctx) {
+        Ok(project) => project,
+        Err(error) => {
+            return vec![Diagnostic {
+                code: "observation",
+                message: error.to_string(),
+                severity: Severity::Warning,
+                source: None,
+                task: None,
+            }];
+        }
+    };
+    let mut diagnostics = Vec::new();
+    for present in &project.present {
+        let provider = runner_providers::REGISTRY
+            .by_id(present.provider)
+            .for_present(present);
+        for index in 0..provider.caps.health.len() {
+            let messages = match runner_core::health::check(
+                &tree,
+                &project,
+                &policy,
+                present,
+                index,
+                &runner_providers::REGISTRY,
+            ) {
+                Ok(runner_core::Health::Ok) => Vec::new(),
+                Ok(runner_core::Health::Problems(messages)) => messages,
+                Ok(runner_core::Health::Unreadable(message)) => vec![message],
+                Err(error) => vec![error.to_string()],
+            };
+            diagnostics.extend(messages.into_iter().map(|message| Diagnostic {
+                code: "health",
+                message,
+                severity: Severity::Warning,
+                source: Some(provider.label),
+                task: None,
+            }));
+        }
     }
-}
-
-/// What mise itself reports about the project: declared tools that are not
-/// installed, and `mise tasks validate` findings. Runner relays these
-/// rather than re-implementing them.
-fn mise_diagnostics(ctx: &ProjectContext) -> Vec<Diagnostic> {
-    if !ctx.task_runners.contains(&TaskRunner::Mise) {
-        return Vec::new();
-    }
-    let health = crate::tool::mise::health(&ctx.root);
-    let missing = health.missing_tools.iter().map(|tool| Diagnostic {
-        code: "mise",
-        message: format!("{tool} is declared but not installed; `runner install` installs it"),
-        severity: Severity::Warning,
-        source: Some("mise"),
-        task: None,
-    });
-    let issues = health.task_issues.into_iter().map(|issue| Diagnostic {
-        code: "mise",
-        message: format!("mise tasks validate: {}", issue.message),
-        severity: if issue.severity == "error" {
-            Severity::Warning
-        } else {
-            Severity::Info
-        },
-        source: Some("mise"),
-        task: Some(issue.task),
-    });
-    missing.chain(issues).collect()
+    diagnostics
 }
 
 fn diagnostic(warning: &DetectionWarning) -> Diagnostic {
@@ -1250,8 +1261,7 @@ fn diagnostic(warning: &DetectionWarning) -> Diagnostic {
 fn rfc3339_utc_now() -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or_default();
+        .map_or_default(|d| d.as_secs());
     rfc3339_utc(secs)
 }
 
@@ -1284,29 +1294,29 @@ const fn civil_from_days(days: i64) -> (i64, i64, i64) {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use crate::provider::Named;
 
     use super::{DoctorReport, rfc3339_utc};
     use crate::resolver::ResolutionOverrides;
-    use crate::types::{Ecosystem, PackageManager, ProjectContext, Task, TaskSource};
+    use crate::types::{ProjectContext, Task};
+    use runner_core::{Ecosystem, ProviderId};
 
     fn context(tasks: Vec<Task>) -> ProjectContext {
-        ProjectContext {
-            cwd: PathBuf::from("/tmp/test"),
-            root: PathBuf::from("/tmp/test"),
-            package_managers: vec![PackageManager::Cargo],
-            task_runners: Vec::new(),
+        let root = crate::tool::test_support::project_root();
+        crate::tool::test_support::write_signal(&root, ProviderId::Cargo);
+        let mut ctx = ProjectContext {
+            cwd: root.clone(),
+            root,
             tasks,
-            node_version: None,
-            current_node: None,
-            is_monorepo: false,
             workspace: None,
-            install_dirs: Vec::new(),
             warnings: Vec::new(),
-        }
+            project: Ok(runner_core::Project::default()),
+        };
+        crate::tool::test_support::seed_context(&mut ctx);
+        ctx
     }
 
-    fn task(name: &str, source: TaskSource) -> Task {
+    fn task(name: &str, source: ProviderId) -> Task {
         Task {
             name: name.to_string(),
             source,
@@ -1337,9 +1347,8 @@ mod tests {
 
         assert_eq!(json["kind"], "runner.doctor");
         assert_eq!(json["schema_version"], 1);
-        assert_eq!(json["overrides"]["output"]["level"], "off");
+        assert_eq!(json["overrides"]["output"]["quiet"], "off");
         assert_eq!(json["overrides"]["output"]["fatal_errors"], true);
-        assert_eq!(json["overrides"]["quiet"], false);
         assert!(
             json["$schema"]
                 .as_str()
@@ -1368,9 +1377,9 @@ mod tests {
 
     #[test]
     fn v3_report_surfaces_duplicate_names_as_conflicts() {
-        let mut alias = task("t", TaskSource::CargoAliases);
+        let mut alias = task("t", ProviderId::Cargo);
         alias.alias_of = Some("test".to_string());
-        let ctx = context(vec![alias, task("t", TaskSource::Justfile)]);
+        let ctx = context(vec![alias, task("t", ProviderId::Just)]);
         let report = DoctorReport::build(&ctx, &ResolutionOverrides::default(), false);
         let json = serde_json::to_value(&report).expect("report should serialize");
 
@@ -1380,25 +1389,22 @@ mod tests {
         // The justfile recipe wins: same tier, but recipes rank before
         // aliases.
         assert_eq!(conflict["selected"], "root:just#t");
-        assert_eq!(
-            conflict["shadowed"],
-            serde_json::json!(["root:cargo-alias#t"])
-        );
+        assert_eq!(conflict["shadowed"], serde_json::json!(["root:cargo#t"]));
     }
 
     #[test]
     fn v3_report_resolves_cargo_alias_tasks() {
-        let mut alias = task("t", TaskSource::CargoAliases);
+        let mut alias = task("t", ProviderId::Cargo);
         alias.alias_of = Some("test".to_string());
         let ctx = context(vec![alias]);
         let report = DoctorReport::build(&ctx, &ResolutionOverrides::default(), false);
         let json = serde_json::to_value(&report).expect("report should serialize");
 
         let task = &json["tasks"][0];
-        assert_eq!(task["fqn"], "root:cargo-alias#t");
+        assert_eq!(task["fqn"], "root:cargo#t");
         assert_eq!(task["is_alias"], true);
         assert_eq!(task["definition"], "test");
-        assert_eq!(task["resolved"], "cargo test");
+        assert_eq!(task["resolved"], "cargo t");
         assert_eq!(task["source_pointer"], "alias.t");
         assert_eq!(task["dependencies"], serde_json::json!([]));
     }
@@ -1410,9 +1416,9 @@ mod tests {
         // and `tools` must surface Node too; otherwise the document is
         // internally inconsistent (tasks reference a runtime the rest of
         // the report claims absent).
-        let ctx = context(vec![task("build", TaskSource::PackageJson)]);
+        let ctx = context(vec![task("build", ProviderId::PackageJson)]);
         assert!(
-            !ctx.package_managers
+            !ctx.package_managers()
                 .iter()
                 .any(|pm| pm.ecosystem() == Ecosystem::Node),
             "precondition: no Node PM detected"
@@ -1438,11 +1444,10 @@ mod tests {
         // a bare pyproject.toml with [project.scripts] but no uv.lock/poetry
         // markers still resolves tasks via the detected/overridden Python
         // PM, so ecosystems/tools must surface Python too.
-        use crate::tool::python::PYTHON_BIN;
-
-        let ctx = context(vec![task("build", TaskSource::PyprojectScripts)]);
+        let python = ProviderId::Python.provider().program;
+        let ctx = context(vec![task("build", ProviderId::Pyproject)]);
         assert!(
-            !ctx.package_managers
+            !ctx.package_managers()
                 .iter()
                 .any(|pm| pm.ecosystem() == Ecosystem::Python),
             "precondition: no Python PM detected"
@@ -1457,26 +1462,24 @@ mod tests {
         );
         let tools = json["tools"].as_array().expect("tools array");
         assert!(
-            tools.iter().any(|t| t["name"] == PYTHON_BIN),
+            tools.iter().any(|t| t["name"].as_str() == python),
             "python runtime tool must be probed when pyproject.toml tasks exist"
         );
     }
 
     #[test]
     fn forced_runtime_previews_package_json_scripts_through_the_runtime() {
-        // A forced runtime dispatches package.json scripts through its own
-        // runner; `resolved` must match that, not the resolved PM's command.
-        let overrides = ResolutionOverrides::from_cli_and_env(
-            crate::resolver::CliOverrides {
-                runtime: Some("bun"),
-                ..crate::resolver::CliOverrides::default()
+        let overrides = ResolutionOverrides::resolve(
+            &crate::resolver::Invocation {
+                runtime: Some((ProviderId::Bun, crate::invocation::Origin::Cli)),
+                ..crate::resolver::Invocation::default()
             },
-            crate::resolver::DiagnosticFlags::default(),
-            crate::cli::ChainFailureFlags::default(),
             None,
         )
-        .expect("runtime override should parse");
-        let ctx = context(vec![task("build", TaskSource::PackageJson)]);
+        .expect("runtime override resolves");
+        let mut ctx = context(vec![task("build", ProviderId::PackageJson)]);
+        crate::tool::test_support::declare(&mut ctx, ProviderId::Bun);
+        crate::tool::test_support::seed_context(&mut ctx);
         let report = DoctorReport::build(&ctx, &overrides, false);
         let json = serde_json::to_value(&report).expect("report should serialize");
 
@@ -1487,7 +1490,8 @@ mod tests {
             .find(|t| t["name"] == "build")
             .expect("build task present");
         assert_eq!(build["resolved"], "bun --bun run build");
-        assert_eq!(json["overrides"]["runtime"], "bun");
+        assert_eq!(json["overrides"]["runtime"]["value"], "bun");
+        assert_eq!(json["overrides"]["runtime"]["origin"], "cli");
     }
 
     #[test]
@@ -1505,25 +1509,22 @@ mod tests {
     }
 
     #[test]
-    fn report_surfaces_previously_missing_override_fields() {
-        use std::collections::BTreeMap;
-
+    fn report_surfaces_every_setting() {
         use crate::chain::FailurePolicy;
         use crate::resolver::ScriptPolicy;
-        use crate::types::PackageManager;
 
         let overrides = ResolutionOverrides {
-            failure_policy: FailurePolicy::KeepGoing,
-            group_output: false,
-            github_group_parallel: false,
-            parallel_grouped: true,
-            install_pms: vec![PackageManager::Npm, PackageManager::Pnpm],
+            failure_policy: FailurePolicy::Continue,
             script_policy: ScriptPolicy::Deny,
-            prefer_sources: vec![TaskSource::Justfile, TaskSource::CargoAliases],
-            task_source_overrides: BTreeMap::from([(
+            install_tools: false,
+            tasks: [(
                 "build".to_string(),
-                vec![TaskSource::Justfile],
-            )]),
+                crate::resolver::TaskChoice {
+                    source: Some(ProviderId::Just),
+                    ..crate::resolver::TaskChoice::default()
+                },
+            )]
+            .into(),
             ..ResolutionOverrides::default()
         };
 
@@ -1532,17 +1533,11 @@ mod tests {
         let json = serde_json::to_value(&report).expect("report should serialize");
 
         let ov = &json["overrides"];
-        assert_eq!(ov["failure_policy"], "keep-going");
-        assert_eq!(ov["output_grouping"]["group_output"], false);
-        assert_eq!(ov["output_grouping"]["github_group_parallel"], false);
-        assert_eq!(ov["output_grouping"]["parallel_grouped"], true);
-        assert_eq!(ov["install_pms"], serde_json::json!(["npm", "pnpm"]));
+        assert_eq!(ov["failure_policy"], "continue");
         assert_eq!(ov["script_policy"], "deny");
-        assert_eq!(
-            ov["prefer_sources"],
-            serde_json::json!(["just", "cargo-alias"])
-        );
-        assert_eq!(ov["task_source_pins"]["build"], serde_json::json!(["just"]));
+        assert_eq!(ov["install_tools"], false);
+        assert_eq!(ov["tasks"]["build"]["source"], "just");
+        assert_eq!(ov["output"]["timing"], true);
     }
 
     /// Drift guard: every field on [`ResolutionOverrides`] must appear
@@ -1552,39 +1547,14 @@ mod tests {
     /// until listed) and feeds the checked names, so the list can't go
     /// stale relative to the destructure.
     ///
-    /// Two fields are reported under a different name/shape than
-    /// `ResolutionOverrides` uses, both to dodge clippy lints:
-    /// `task_source_overrides` reports as `task_source_pins`
-    /// (`struct_field_names`, it would otherwise end with the struct's
-    /// own name), and `group_output`/`github_group_parallel`/
-    /// `parallel_grouped` nest under `output_grouping`
-    /// (`struct_excessive_bools`). `RENAMED`/the `output_grouping` unnest
-    /// below account for both.
+    /// Fields reported under another name are listed in `RENAMED`.
     #[test]
     fn every_resolution_overrides_field_is_reported_or_excluded() {
-        // Internal runner-to-runner plumbing (inherited env markers),
-        // never user overrides, nothing meaningful to report.
-        // `parent_*` are internal runner-to-runner plumbing. `host_stream` and
-        // `task_verbosity` are the host-tool verbosity knobs, which affect the
-        // spawned tool's flags rather than runner's own resolution, so they're
-        // not part of the doctor resolution report (the runner-facing quiet
-        // level still is, as `quiet`).
-        const EXCLUDED: &[&str] = &[
-            "package",
-            "parent_group_open",
-            "parent_warned",
-            "host_stream",
-            "host_stream_invocation_explicit",
-            "task_verbosity",
-            "host_diagnostics_explicit",
-        ];
+        // `package` names one invocation's binary, `parent` is runner-to-runner
+        // plumbing and `config` is the file path the report already carries.
+        const EXCLUDED: &[&str] = &["package", "parent", "config"];
         // Resolver field name -> name it's actually reported under.
-        const RENAMED: &[(&str, &str)] = &[
-            ("task_source_overrides", "task_source_pins"),
-            ("quiet_level", "quiet"),
-            ("output_policy", "output"),
-            ("host_stream_config", "output"),
-        ];
+        const RENAMED: &[(&str, &str)] = &[("quiet_level", "output")];
 
         // One list, two jobs: exhaustively destructure ResolutionOverrides
         // (a new field fails to compile until added here) and name the
@@ -1598,34 +1568,20 @@ mod tests {
         let resolution_overrides_fields = resolution_overrides_fields![
             pm,
             package,
-            pm_by_ecosystem,
-            runner,
+            source,
             runtime,
-            prefer_runners,
-            prefer_sources,
-            task_source_overrides,
-            fallback,
-            on_mismatch,
-            no_warnings,
             quiet_level,
-            host_diagnostics_explicit,
-            output_policy,
-            host_stream,
-            host_stream_invocation_explicit,
-            host_stream_config,
-            task_verbosity,
-            explain,
+            output,
+            dry_run,
             failure_policy,
-            group_output,
-            github_group_parallel,
-            parallel_grouped,
-            install_pms,
             script_policy,
-            on_collision,
-            parent_group_open,
-            parent_warned,
+            lockfile,
+            install_tools,
+            download,
             env,
-            tool_install,
+            tasks,
+            config,
+            parent,
         ];
 
         let schema = serde_json::to_value(schemars::schema_for!(super::Overrides))
@@ -1633,21 +1589,8 @@ mod tests {
         let top_properties = schema["properties"]
             .as_object()
             .expect("Overrides schema must have properties");
-        let mut reported: std::collections::BTreeSet<&str> =
+        let reported: std::collections::BTreeSet<&str> =
             top_properties.keys().map(String::as_str).collect();
-
-        // Unnest OutputGrouping so its 3 fields match by their
-        // ResolutionOverrides names instead of living behind a
-        // container the resolver struct doesn't have.
-        reported.remove("output_grouping");
-        let grouping_def = top_properties["output_grouping"]["$ref"]
-            .as_str()
-            .and_then(|r| r.strip_prefix("#/$defs/"))
-            .expect("output_grouping field must $ref a $defs entry");
-        let grouping_properties = schema["$defs"][grouping_def]["properties"]
-            .as_object()
-            .unwrap_or_else(|| panic!("{grouping_def}: expected a properties object"));
-        reported.extend(grouping_properties.keys().map(String::as_str));
 
         for field in resolution_overrides_fields {
             if EXCLUDED.contains(&field) {
@@ -1667,30 +1610,5 @@ mod tests {
                  {reported_name:?}) nor on the EXCLUDED allowlist, add it to one"
             );
         }
-    }
-
-    /// The closed key set depends on `Ecosystem` variants carrying no doc
-    /// comments (see `src/types.rs`); a `///` there silently reverts the
-    /// map to open `additionalProperties`. This pins the shape.
-    #[test]
-    fn pm_by_ecosystem_schema_keys_stay_closed() {
-        let schema = serde_json::to_value(schemars::schema_for!(super::Overrides))
-            .expect("Overrides schema should serialize");
-        let map_schema = &schema["properties"]["pm_by_ecosystem"];
-
-        assert_eq!(
-            map_schema["additionalProperties"],
-            serde_json::json!(false),
-            "pm_by_ecosystem must reject unknown keys"
-        );
-        let keys: Vec<&str> = map_schema["properties"]
-            .as_object()
-            .expect("pm_by_ecosystem must enumerate its keys")
-            .keys()
-            .map(String::as_str)
-            .collect();
-        let mut expected: Vec<&str> = Ecosystem::ALL.iter().map(|eco| eco.label()).collect();
-        expected.sort_unstable();
-        assert_eq!(keys, expected);
     }
 }

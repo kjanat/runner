@@ -40,12 +40,10 @@ impl ChainItem {
         }
     }
 
-    /// Construct the synthetic install-head used by `runner install <tasks>`.
-    /// `flags` mirrors the install-scoped CLI flags and is propagated to the
-    /// install executor.
-    pub(crate) const fn install(flags: crate::cmd::install::InstallFlags) -> Self {
+    /// The synthetic install head `runner install <tasks>` runs first.
+    pub(crate) const fn install() -> Self {
         Self {
-            kind: ChainItemKind::Install { flags },
+            kind: ChainItemKind::Install,
             args: Vec::new(),
         }
     }
@@ -54,7 +52,7 @@ impl ChainItem {
     pub(crate) const fn display_name(&self) -> &str {
         match &self.kind {
             ChainItemKind::Task(name) => name.as_str(),
-            ChainItemKind::Install { .. } => "install",
+            ChainItemKind::Install => "install",
         }
     }
 }
@@ -63,30 +61,32 @@ impl ChainItem {
 pub(crate) enum ChainItemKind {
     /// User-supplied task name, resolved per-item via the existing 8-step chain.
     Task(String),
-    /// Synthetic head used by `runner install <tasks>`. Dispatches the
-    /// detected PM's install command under the install-scoped CLI flags.
-    Install {
-        flags: crate::cmd::install::InstallFlags,
-    },
+    /// Synthetic head used by `runner install <tasks>`.
+    Install,
 }
 
-/// Failure policy for a chain. `FailFast` is the default and matches
-/// `make -j` semantics in parallel mode (let running siblings finish;
-/// don't start new ones).
-#[derive(schemars::JsonSchema, Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "kebab-case")]
+/// What a chain does after one of its tasks fails.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    schemars::JsonSchema,
+    clap::ValueEnum,
+)]
+#[serde(rename_all = "lowercase")]
 pub(crate) enum FailurePolicy {
-    /// Stop the chain on the first failing task. In parallel mode,
-    /// already-running siblings complete naturally.
+    /// Keep starting the remaining tasks.
+    Continue,
+    /// Start no more tasks and let running ones finish.
     #[default]
-    FailFast,
-    /// Run every task to completion regardless of failures. Final exit
-    /// code reflects the first failure.
-    KeepGoing,
-    /// Parallel only: SIGKILL siblings on first failure (`std::process::Child::kill`).
-    /// Sequential callers accept this silently (no-op). Catch-able SIGTERM
-    /// semantics would need a libc/nix dep, deferred to a follow-up.
-    KillOnFail,
+    Wait,
+    /// Start no more tasks and stop running ones.
+    Kill,
 }
 
 #[cfg(test)]
@@ -102,46 +102,18 @@ mod tests {
 
     #[test]
     fn install_head_has_no_args() {
-        let item = ChainItem::install(crate::cmd::install::InstallFlags::default());
-        assert!(item.args.is_empty());
-        assert!(matches!(
-            item.kind,
-            ChainItemKind::Install {
-                flags: crate::cmd::install::InstallFlags {
-                    frozen: false,
-                    no_tools: false,
-                }
-            }
-        ));
+        let item = ChainItem::install();
+        assert_eq!(item.args.len(), 0);
+        assert!(matches!(item.kind, ChainItemKind::Install));
     }
 
     #[test]
-    fn install_head_propagates_install_flags() {
-        let item = ChainItem::install(crate::cmd::install::InstallFlags {
-            frozen: true,
-            no_tools: true,
-        });
-        assert!(matches!(
-            item.kind,
-            ChainItemKind::Install {
-                flags: crate::cmd::install::InstallFlags {
-                    frozen: true,
-                    no_tools: true,
-                }
-            }
-        ));
-    }
-
-    #[test]
-    fn failure_policy_default_is_fail_fast() {
-        assert_eq!(FailurePolicy::default(), FailurePolicy::FailFast);
+    fn failure_policy_default_is_wait() {
+        assert_eq!(FailurePolicy::default(), FailurePolicy::Wait);
     }
 
     #[test]
     fn display_name_is_install_for_install_head() {
-        assert_eq!(
-            ChainItem::install(crate::cmd::install::InstallFlags::default()).display_name(),
-            "install"
-        );
+        assert_eq!(ChainItem::install().display_name(), "install");
     }
 }

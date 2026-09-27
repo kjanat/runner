@@ -9,6 +9,8 @@
 //! warning rather than failing. Run them locally with `cargo test
 //! --test chain_integration`.
 
+mod support;
+
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -18,23 +20,32 @@ fn runner_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_runner"))
 }
 
-/// The `runner` binary with every `RUNNER_*` variable scrubbed, so grouping
-/// assertions do not depend on how the suite was launched. Running the tests
-/// through `runner` under GitHub Actions inherits `RUNNER_GROUP_ACTIVE=1`
-/// (the "a parent already opened a group" marker), which makes a spawned
-/// runner suppress its own grouping and fall back to the live muxer.
+fn group(task: &str) -> String {
+    actions_rs::WorkflowCommand::new("group")
+        .message(format!("runner: {task}"))
+        .to_string()
+}
+
+fn any_group() -> String {
+    actions_rs::WorkflowCommand::new("group").to_string()
+}
+
+fn endgroup() -> String {
+    actions_rs::WorkflowCommand::new("endgroup").to_string()
+}
+
+fn error(title: Option<&str>) -> String {
+    let annotation = title.map_or_else(actions_rs::Annotation::new, |title| {
+        actions_rs::Annotation::new().title(title)
+    });
+    let command = annotation
+        .command(actions_rs::AnnotationKind::Error, "")
+        .to_string();
+    command.strip_suffix("::").unwrap_or(&command).to_owned()
+}
+
 fn runner_command() -> Command {
-    let mut cmd = Command::new(runner_binary());
-    for (key, _) in std::env::vars_os() {
-        if key
-            .to_string_lossy()
-            .to_ascii_uppercase()
-            .starts_with("RUNNER_")
-        {
-            cmd.env_remove(&key);
-        }
-    }
-    cmd
+    support::command(runner_binary())
 }
 
 fn fixture(name: &str) -> PathBuf {
@@ -123,7 +134,7 @@ fn sequential_chain_emits_per_task_timing_on_stderr() {
         ])
         // Scrub GITHUB_ACTIONS so the timing line shape is deterministic
         // regardless of the host CI environment.
-        .env_remove("GITHUB_ACTIONS")
+        .env_remove(actions_rs::env::vars::GITHUB_ACTIONS)
         .output()
         .expect("runner binary spawns");
 
@@ -152,9 +163,8 @@ fn streaming_parallel_chain_emits_per_task_timing_on_stderr() {
         eprintln!("skipping: `just` not found on PATH");
         return;
     }
-    // `chain-parallel-fail`'s runner.toml forces the live (streaming) muxer on
-    // both the CI and non-CI paths, so this deterministically exercises the
-    // streaming timing emission. fail-mid exits 7; the default FailFast policy
+    // `chain-parallel-fail` sets `[output.parallel] buffer = false`, so this
+    // deterministically exercises the streaming timing emission. fail-mid exits 7; the default FailFast policy
     // lets the already-spawned siblings finish, so all three report timing.
     let output = runner_command()
         .arg("--dir")
@@ -265,7 +275,7 @@ fn parallel_install_chain_times_the_install_step() {
         .arg("--dir")
         .arg(&project)
         .args(["install", "-p", "build"])
-        .env_remove("GITHUB_ACTIONS")
+        .env_remove(actions_rs::env::vars::GITHUB_ACTIONS)
         .output()
         .expect("runner binary spawns");
 
@@ -309,14 +319,13 @@ fn grouped_parallel_chain_folds_timing_into_block_footer() {
         eprintln!("skipping: `just` not found on PATH");
         return;
     }
-    // `parallel-grouped`'s runner.toml opts into grouped output outside GitHub
-    // Actions, so each task's duration is folded into its block footer on
+    // `parallel-grouped` sets `[output.parallel] buffer = true`, so each task's duration is folded into its block footer on
     // stdout (not a stderr meta-line).
     let output = runner_command()
         .arg("--dir")
         .arg(fixture("parallel-grouped"))
         .args(["run", "-p", "build", "test"])
-        .env_remove("GITHUB_ACTIONS")
+        .env_remove(actions_rs::env::vars::GITHUB_ACTIONS)
         .output()
         .expect("runner binary spawns");
 
@@ -352,7 +361,7 @@ fn grouped_parallel_chain_folds_timing_into_group_footer_under_actions() {
         .arg("--dir")
         .arg(fixture("parallel-grouped"))
         .args(["run", "-p", "build", "test"])
-        .env("GITHUB_ACTIONS", "true")
+        .env(actions_rs::env::vars::GITHUB_ACTIONS, "true")
         .output()
         .expect("runner binary spawns");
 
@@ -375,14 +384,8 @@ fn grouped_parallel_chain_folds_timing_into_group_footer_under_actions() {
     // `::endgroup::`. Groups are flat (GitHub Actions can't nest them) and the
     // supervisor flushes one block at a time, so the markers strictly alternate
     // group/endgroup; pair them up and assert each block carries its timing.
-    let groups: Vec<usize> = stdout
-        .match_indices("::group::runner: ")
-        .map(|(i, _)| i)
-        .collect();
-    let ends: Vec<usize> = stdout
-        .match_indices("::endgroup::")
-        .map(|(i, _)| i)
-        .collect();
+    let groups: Vec<usize> = stdout.match_indices(&group("")).map(|(i, _)| i).collect();
+    let ends: Vec<usize> = stdout.match_indices(&endgroup()).map(|(i, _)| i).collect();
     assert_eq!(
         groups.len(),
         2,
@@ -418,7 +421,7 @@ fn quiet_suppresses_chain_timing() {
         .arg(fixture("chain-sequential"))
         .args(["run", "-s", "build", "test"])
         .env("RUNNER_QUIET", "1")
-        .env_remove("GITHUB_ACTIONS")
+        .env_remove(actions_rs::env::vars::GITHUB_ACTIONS)
         .output()
         .expect("runner binary spawns");
 
@@ -461,10 +464,8 @@ fn parallel_chain_exit_code_reflects_first_failure() {
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    // The fixture's runner.toml disables parallel grouping on both the CI
-    // (`[github].group_parallel`) and non-CI (`[parallel].grouped`) paths, so
-    // this deterministically exercises the live line-prefixed muxer
-    // regardless of environment. Output is line-prefixed.
+    // The fixture sets `[output.parallel] buffer = false`, so this exercises
+    // the live line-prefixed muxer regardless of environment.
     assert!(
         stdout.contains("[ok-one"),
         "expected `[ok-one ]` prefix on ok-one's output. stdout: {stdout}",
@@ -493,6 +494,122 @@ fn chain_rejects_mutually_exclusive_mode_flags() {
         stderr.contains("--sequential") || stderr.contains("--parallel"),
         "expected clap conflict diagnostic. stderr: {stderr}",
     );
+}
+
+#[test]
+fn a_command_line_mode_displaces_the_opposite_mode_from_the_environment() {
+    if !just_available() {
+        eprintln!("skipping: `just` not found on PATH");
+        return;
+    }
+    let run = PathBuf::from(env!("CARGO_BIN_EXE_run"));
+    for (binary, variable, flag, prefixed) in [
+        (runner_binary(), "RUNNER_RUN_PARALLEL", "-s", false),
+        (run.clone(), "RUNNER_RUN_PARALLEL", "-s", false),
+        (runner_binary(), "RUNNER_RUN_SEQUENTIAL", "-p", true),
+        (run, "RUNNER_RUN_SEQUENTIAL", "-p", true),
+    ] {
+        let mut words = vec!["--dir".into(), fixture("chain-sequential").into_os_string()];
+        if binary == runner_binary() {
+            words.push("run".into());
+        }
+        words.extend([flag, "build", "test"].map(std::ffi::OsString::from));
+        let output = support::command(binary)
+            .args(&words)
+            .env(variable, "1")
+            .env_remove(actions_rs::env::vars::GITHUB_ACTIONS)
+            .output()
+            .expect("binary spawns");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success(),
+            "{variable}=1 {flag}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            stdout.contains("[build]"),
+            prefixed,
+            "{variable}=1 {flag}: {stdout}"
+        );
+    }
+}
+
+#[test]
+fn a_runner_nested_in_a_github_actions_group_opens_no_group_of_its_own() {
+    if !just_available() {
+        eprintln!("skipping: `just` not found on PATH");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("runner-nested-group-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create temp project dir");
+    std::fs::write(
+        dir.join("justfile"),
+        format!(
+            "outer:\n\t@'{}' run inner\n\ninner:\n\t@echo inner-ran\n",
+            runner_binary().display()
+        ),
+    )
+    .expect("write justfile");
+    let output = runner_command()
+        .arg("--dir")
+        .arg(&dir)
+        .args(["run", "outer"])
+        .env(actions_rs::env::vars::GITHUB_ACTIONS, "true")
+        .output()
+        .expect("runner binary spawns");
+    let _ = std::fs::remove_dir_all(&dir);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(stdout.matches(&any_group()).count(), 1, "{stdout}");
+    let opened = stdout.find(&group("outer")).expect("outer group");
+    let ran = stdout.find("inner-ran").expect("inner output");
+    let closed = stdout.find(&endgroup()).expect("group closes");
+    assert!(opened < ran && ran < closed, "{stdout}");
+}
+
+#[test]
+fn opposite_modes_from_the_environment_are_a_usage_error() {
+    let output = runner_command()
+        .arg("--dir")
+        .arg(fixture("chain-sequential"))
+        .args(["run", "build", "test"])
+        .env("RUNNER_RUN_SEQUENTIAL", "1")
+        .env("RUNNER_RUN_PARALLEL", "true")
+        .output()
+        .expect("runner binary spawns");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(2), "{stderr}");
+    assert!(
+        stderr.contains("RUNNER_RUN_SEQUENTIAL") && stderr.contains("RUNNER_RUN_PARALLEL"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn a_command_line_format_displaces_the_opposite_format_from_the_environment() {
+    for (variable, flag, json) in [
+        ("RUNNER_LIST_JSON", "--raw", false),
+        ("RUNNER_LIST_RAW", "--json", true),
+    ] {
+        let output = runner_command()
+            .arg("--dir")
+            .arg(fixture("chain-sequential"))
+            .args(["list", flag])
+            .env(variable, "1")
+            .output()
+            .expect("runner binary spawns");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success(), "{variable}=1 {flag}: {stdout}");
+        assert_eq!(
+            stdout.trim_start().starts_with('{'),
+            json,
+            "{variable}=1 {flag}: {stdout}"
+        );
+    }
 }
 
 #[test]
@@ -656,7 +773,7 @@ fn sequential_chain_wraps_steps_in_github_actions_groups() {
         .arg("--dir")
         .arg(fixture("chain-sequential"))
         .args(["run", "-s", "build", "test"])
-        .env("GITHUB_ACTIONS", "true")
+        .env(actions_rs::env::vars::GITHUB_ACTIONS, "true")
         .output()
         .expect("runner binary spawns");
 
@@ -667,14 +784,14 @@ fn sequential_chain_wraps_steps_in_github_actions_groups() {
     );
 
     let g_build = stdout
-        .find("::group::runner: build")
+        .find(&group("build"))
         .unwrap_or_else(|| panic!("missing build group. stdout: {stdout}"));
     let end_build = g_build
         + stdout[g_build..]
-            .find("::endgroup::")
+            .find(&endgroup())
             .unwrap_or_else(|| panic!("build group not closed. stdout: {stdout}"));
     let g_test = stdout
-        .find("::group::runner: test")
+        .find(&group("test"))
         .unwrap_or_else(|| panic!("missing test group. stdout: {stdout}"));
     let build_ran = stdout
         .find("build-ran")
@@ -688,12 +805,12 @@ fn sequential_chain_wraps_steps_in_github_actions_groups() {
         "expected build group to open, contain build-ran, close, then test group. stdout: {stdout}",
     );
     assert_eq!(
-        stdout.matches("::group::runner: ").count(),
+        stdout.matches(&group("")).count(),
         2,
         "expected exactly two groups. stdout: {stdout}",
     );
     assert_eq!(
-        stdout.matches("::endgroup::").count(),
+        stdout.matches(&endgroup()).count(),
         2,
         "expected exactly two endgroups. stdout: {stdout}",
     );
@@ -711,7 +828,7 @@ fn single_task_is_grouped_under_github_actions() {
         .arg("--dir")
         .arg(fixture("chain-sequential"))
         .args(["run", "build"])
-        .env("GITHUB_ACTIONS", "true")
+        .env(actions_rs::env::vars::GITHUB_ACTIONS, "true")
         .output()
         .expect("runner binary spawns");
 
@@ -721,11 +838,11 @@ fn single_task_is_grouped_under_github_actions() {
         "expected success. stdout: {stdout}"
     );
     assert!(
-        stdout.contains("::group::runner: build"),
+        stdout.contains(&group("build")),
         "single task should be wrapped in a group. stdout: {stdout}",
     );
     assert_eq!(
-        stdout.matches("::group::").count(),
+        stdout.matches(&any_group()).count(),
         1,
         "exactly one group for a single task. stdout: {stdout}",
     );
@@ -743,7 +860,7 @@ fn no_groups_emitted_outside_github_actions() {
         .arg("--dir")
         .arg(fixture("chain-sequential"))
         .args(["run", "-s", "build", "test"])
-        .env_remove("GITHUB_ACTIONS")
+        .env_remove(actions_rs::env::vars::GITHUB_ACTIONS)
         .output()
         .expect("runner binary spawns");
 
@@ -753,11 +870,11 @@ fn no_groups_emitted_outside_github_actions() {
         "expected success. stdout: {stdout}"
     );
     assert!(
-        !stdout.contains("::group::"),
+        !stdout.contains(&any_group()),
         "no GHA groups in a normal terminal. stdout: {stdout}",
     );
     assert!(
-        !stdout.contains("::endgroup::"),
+        !stdout.contains(&endgroup()),
         "no GHA endgroups in a normal terminal. stdout: {stdout}",
     );
 }
@@ -768,14 +885,13 @@ fn config_opt_out_disables_grouping_under_github_actions() {
         eprintln!("skipping: `just` not found on PATH");
         return;
     }
-    // The `github-no-group` fixture ships a runner.toml with
-    // `[github] group_output = false`, so even under GitHub Actions no
-    // groups are emitted.
+    // The `github-no-group` fixture sets `[output] groups = false`, so even
+    // under GitHub Actions no groups are emitted.
     let output = runner_command()
         .arg("--dir")
         .arg(fixture("github-no-group"))
         .args(["run", "build"])
-        .env("GITHUB_ACTIONS", "true")
+        .env(actions_rs::env::vars::GITHUB_ACTIONS, "true")
         .output()
         .expect("runner binary spawns");
 
@@ -785,13 +901,13 @@ fn config_opt_out_disables_grouping_under_github_actions() {
         "expected success. stdout: {stdout}"
     );
     assert!(
-        !stdout.contains("::group::"),
+        !stdout.contains(&any_group()),
         "config opt-out must suppress groups. stdout: {stdout}",
     );
 }
 
 #[test]
-fn github_group_output_false_restores_live_parallel_muxer() {
+fn groups_false_under_github_actions_streams_parallel_output() {
     if !just_available() {
         eprintln!("skipping: `just` not found on PATH");
         return;
@@ -800,7 +916,7 @@ fn github_group_output_false_restores_live_parallel_muxer() {
         .arg("--dir")
         .arg(fixture("github-no-group"))
         .args(["run", "-p", "build", "test"])
-        .env("GITHUB_ACTIONS", "true")
+        .env(actions_rs::env::vars::GITHUB_ACTIONS, "true")
         .output()
         .expect("runner binary spawns");
 
@@ -810,12 +926,12 @@ fn github_group_output_false_restores_live_parallel_muxer() {
         "expected success. stdout: {stdout}"
     );
     assert!(
-        stdout.contains("[build") && stdout.contains("[test"),
-        "GHA group_output=false should restore live prefixes. stdout: {stdout}",
+        stdout.contains("build-ran") && stdout.contains("test-ran"),
+        "both tasks stream their output. stdout: {stdout}",
     );
     assert!(
-        !stdout.contains("::group::") && !stdout.contains("runner: build"),
-        "GHA group_output=false should not emit grouped blocks. stdout: {stdout}",
+        !stdout.contains(&any_group()) && !stdout.contains("runner: build"),
+        "groups = false emits no grouped blocks. stdout: {stdout}",
     );
 }
 
@@ -825,13 +941,13 @@ fn parallel_chain_grouped_under_github_actions() {
         eprintln!("skipping: `just` not found on PATH");
         return;
     }
-    // Default `[github].group_parallel` buffers each task and emits it as its
+    // Default `[output.parallel] buffer` buffers each task and emits it as its
     // own ::group:: block under GitHub Actions, no live `[task]` prefixes.
     let output = runner_command()
         .arg("--dir")
         .arg(fixture("chain-sequential"))
         .args(["run", "-p", "build", "test"])
-        .env("GITHUB_ACTIONS", "true")
+        .env(actions_rs::env::vars::GITHUB_ACTIONS, "true")
         .output()
         .expect("runner binary spawns");
 
@@ -848,7 +964,7 @@ fn parallel_chain_grouped_under_github_actions() {
     // Each task's output sits inside its own group; completion order between
     // the two is nondeterministic, so assert per-task containment, not order.
     let g_build = stdout
-        .find("::group::runner: build")
+        .find(&group("build"))
         .unwrap_or_else(|| panic!("missing build group. stdout: {stdout}"));
     let build_ran = stdout
         .find("build-ran")
@@ -858,16 +974,16 @@ fn parallel_chain_grouped_under_github_actions() {
         "build output must sit inside build's group. stdout: {stdout}",
     );
     assert!(
-        stdout.contains("::group::runner: test"),
+        stdout.contains(&group("test")),
         "missing test group. stdout: {stdout}",
     );
     assert_eq!(
-        stdout.matches("::group::runner: ").count(),
+        stdout.matches(&group("")).count(),
         2,
         "expected exactly two groups. stdout: {stdout}",
     );
     assert_eq!(
-        stdout.matches("::endgroup::").count(),
+        stdout.matches(&endgroup()).count(),
         2,
         "expected exactly two endgroups. stdout: {stdout}",
     );
@@ -885,7 +1001,7 @@ fn parallel_chain_grouped_with_plain_headers_outside_github_actions() {
         .arg("--dir")
         .arg(fixture("parallel-grouped"))
         .args(["run", "-p", "build", "test"])
-        .env_remove("GITHUB_ACTIONS")
+        .env_remove(actions_rs::env::vars::GITHUB_ACTIONS)
         .output()
         .expect("runner binary spawns");
 
@@ -895,7 +1011,7 @@ fn parallel_chain_grouped_with_plain_headers_outside_github_actions() {
         "expected success. stdout: {stdout}"
     );
     assert!(
-        !stdout.contains("::group::") && !stdout.contains("::endgroup::"),
+        !stdout.contains(&any_group()) && !stdout.contains(&endgroup()),
         "no workflow-command syntax outside GitHub Actions. stdout: {stdout}",
     );
     assert!(
@@ -930,7 +1046,7 @@ fn parallel_grouped_preserves_child_stderr_stream() {
         .arg("--dir")
         .arg(fixture("parallel-grouped"))
         .args(["run", "-p", "build", "err"])
-        .env_remove("GITHUB_ACTIONS")
+        .env_remove(actions_rs::env::vars::GITHUB_ACTIONS)
         .output()
         .expect("runner binary spawns");
 
@@ -960,7 +1076,7 @@ fn parallel_grouped_does_not_wait_forever_on_inherited_stdout() {
         .arg("--dir")
         .arg(fixture("parallel-grouped"))
         .args(["run", "-p", "hold-open", "build"])
-        .env_remove("GITHUB_ACTIONS")
+        .env_remove(actions_rs::env::vars::GITHUB_ACTIONS)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -1069,7 +1185,7 @@ fn a_grouped_kill_on_fail_chain_reports_killed_siblings_as_killed() {
         .arg("--dir")
         .arg(fixture("parallel-grouped"))
         .args(["run", "-p", "-K", "slow", "fail"])
-        .env_remove("GITHUB_ACTIONS")
+        .env_remove(actions_rs::env::vars::GITHUB_ACTIONS)
         .output()
         .expect("runner binary spawns");
 
@@ -1161,13 +1277,13 @@ fn github_actions_annotates_each_failed_chain_task() {
         .arg("--dir")
         .arg(fixture("chain-parallel-fail"))
         .args(["run", "-s", "-k", "ok-one", "fail-mid"])
-        .env("GITHUB_ACTIONS", "true")
+        .env(actions_rs::env::vars::GITHUB_ACTIONS, "true")
         .output()
         .expect("runner binary spawns");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("::error") && stdout.contains("fail-mid"),
+        stdout.contains(&error(None)) && stdout.contains("fail-mid"),
         "expected an error annotation naming the task. stdout: {stdout}",
     );
     assert!(
@@ -1175,7 +1291,7 @@ fn github_actions_annotates_each_failed_chain_task() {
         "the annotation carries the task's own exit code. stdout: {stdout}",
     );
     assert!(
-        !stdout.contains("::error title=runner%3A ok-one"),
+        !stdout.contains(&error(Some("runner: ok-one"))),
         "a passing task must not be annotated. stdout: {stdout}",
     );
 }
@@ -1192,7 +1308,7 @@ fn silent_suppresses_github_actions_annotations() {
         .arg("--dir")
         .arg(fixture("chain-parallel-fail"))
         .args(["run", "-qqq", "-s", "-k", "ok-one", "fail-mid"])
-        .env("GITHUB_ACTIONS", "true")
+        .env(actions_rs::env::vars::GITHUB_ACTIONS, "true")
         .output()
         .expect("runner binary spawns");
 
@@ -1202,7 +1318,7 @@ fn silent_suppresses_github_actions_annotations() {
         "fail-mid must fail the chain. stdout: {stdout}",
     );
     assert!(
-        !stdout.contains("::error"),
+        !stdout.contains(&error(None)),
         "-qqq must keep annotations off stdout. stdout: {stdout}",
     );
 }
@@ -1217,7 +1333,7 @@ fn quiet_keeps_github_actions_error_annotations() {
         .arg("--dir")
         .arg(fixture("chain-parallel-fail"))
         .args(["run", "-q", "-s", "-k", "ok-one", "fail-mid"])
-        .env("GITHUB_ACTIONS", "true")
+        .env(actions_rs::env::vars::GITHUB_ACTIONS, "true")
         .output()
         .expect("runner binary spawns");
 
@@ -1227,36 +1343,59 @@ fn quiet_keeps_github_actions_error_annotations() {
         "fail-mid must fail the chain. stdout: {stdout}",
     );
     assert!(
-        stdout.contains("::error") && stdout.contains("fail-mid"),
+        stdout.contains(&error(None)) && stdout.contains("fail-mid"),
         "-q keeps runner errors. stdout: {stdout}",
     );
 }
 
 #[test]
-fn group_output_opt_out_drops_annotations_but_keeps_the_summary() {
+fn groups_opt_out_keeps_annotations_and_the_summary() {
     if !just_available() {
         eprintln!("skipping: `just` not found on PATH");
         return;
     }
-    // `[github].group_output` owns runner's Actions output, so it takes the
-    // annotations with it. The roll-up is plain stderr meta-output and is not
-    // Actions-specific, so it stays.
     let output = runner_command()
         .arg("--dir")
         .arg(fixture("github-no-group"))
         .args(["run", "-s", "-k", "build", "fail-mid"])
-        .env("GITHUB_ACTIONS", "true")
+        .env(actions_rs::env::vars::GITHUB_ACTIONS, "true")
         .output()
         .expect("runner binary spawns");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        !stdout.contains("::error"),
-        "group_output = false opts out of annotations. stdout: {stdout}",
+        !stdout.contains(&any_group()),
+        "groups = false emits no groups. stdout: {stdout}",
+    );
+    assert!(
+        stdout.contains(&error(None)) && stdout.contains("fail-mid"),
+        "annotations follow errors. stdout: {stdout}",
     );
     assert!(
         stderr.contains("summary: 2 tasks, 1 ok, 1 failed"),
-        "the roll-up does not follow group_output. stderr: {stderr}",
+        "the roll-up does not follow groups. stderr: {stderr}",
     );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn parallel_builtins_fail_when_their_output_cannot_be_written() {
+    for project in ["chain-parallel-fail", "parallel-grouped"] {
+        let full = std::fs::OpenOptions::new()
+            .write(true)
+            .open("/dev/full")
+            .expect("/dev/full opens");
+        let output = runner_command()
+            .arg("--dir")
+            .arg(fixture(project))
+            .args(["run", "-p", "list", "list"])
+            .env_remove(actions_rs::env::vars::GITHUB_ACTIONS)
+            .stdout(full)
+            .output()
+            .expect("runner binary spawns");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(1), "{project}: {stderr}");
+        assert!(stderr.contains("2 failed"), "{project}: {stderr}");
+    }
 }

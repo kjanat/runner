@@ -34,6 +34,13 @@ pub(crate) fn tracked(dir: &Path, candidates: &[&str]) -> Option<Vec<String>> {
     )
 }
 
+/// Whether git tracks `path`, `None` when git has no answer.
+pub(crate) fn is_tracked(path: &Path) -> Option<bool> {
+    let dir = path.parent()?;
+    let name = path.file_name()?.to_str()?;
+    tracked(dir, &[name]).map(|found| !found.is_empty())
+}
+
 #[cfg(test)]
 mod tests {
     use std::process::Command;

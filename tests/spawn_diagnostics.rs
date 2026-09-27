@@ -1,7 +1,9 @@
 //! Regression coverage for actionable process-spawn errors.
 
+mod support;
+
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 static PROJECT_ID: AtomicU32 = AtomicU32::new(0);
@@ -33,15 +35,11 @@ impl TempProject {
 
     #[cfg(unix)]
     fn executable(self, name: &str, contents: &str) -> Self {
-        use std::os::unix::fs::PermissionsExt;
-
         let path = self.path.join(name);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).expect("create executable parent");
         }
-        std::fs::write(&path, contents).expect("write executable");
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
-            .expect("mark executable");
+        write_executable(&path, contents);
         self
     }
 
@@ -56,6 +54,24 @@ impl Drop for TempProject {
     }
 }
 
+#[cfg(unix)]
+fn write_executable(path: &Path, contents: &str) {
+    use std::io::Write as _;
+    let mut child = std::process::Command::new("sh")
+        .args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "sh"])
+        .arg(path)
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .expect("sh writes the executable");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(contents.as_bytes())
+        .expect("contents written");
+    assert!(child.wait().expect("sh exits").success());
+}
+
 fn runner_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_runner"))
 }
@@ -64,16 +80,7 @@ fn run_in(project: &TempProject, args: &[&str]) -> Output {
     let empty_path = project.path().join("empty-path");
     std::fs::create_dir_all(&empty_path).expect("create isolated PATH");
 
-    let mut command = Command::new(runner_binary());
-    for (key, _) in std::env::vars_os() {
-        if key
-            .to_string_lossy()
-            .to_ascii_uppercase()
-            .starts_with("RUNNER_")
-        {
-            command.env_remove(&key);
-        }
-    }
+    let mut command = support::command(runner_binary());
     command
         .env("PATH", empty_path)
         .arg("--dir")
@@ -172,16 +179,14 @@ fn project_local_pm_uses_effective_child_path_for_diagnostics() {
 }
 
 #[test]
-fn pyproject_script_missing_pm_reports_provenance() {
+fn pyproject_script_missing_pm_reports_the_layer_that_chose_it() {
     let project = uv_project("python");
     let output = run_in(&project, &["run", "hello"]);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert_eq!(output.status.code(), Some(1), "stderr: {stderr}");
     assert!(
-        stderr.contains(
-            "uv via detected Python project was selected, but its executable was not found on PATH",
-        ),
+        stderr.contains("uv via uv.lock was selected, but its executable was not found on PATH",),
         "missing actionable Python package-manager diagnostic. stderr: {stderr}",
     );
 }

@@ -4,12 +4,13 @@
 //!
 //! `runner install`'s multi-PM executor is exercised here against fake package
 //! managers on `PATH`, shell scripts that log when they start and finish and
-//! sleep in between. That makes the two properties that matter observable:
-//! managers sharing `node_modules/` never overlap, and managers that don't
-//! share a directory still do.
+//! sleep in between. One manager installs a shared `node_modules/`, and
+//! managers with their own directories run alongside it.
+
+mod support;
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
 
 fn runner_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_runner"))
@@ -47,20 +48,28 @@ fn colliding_project(name: &str, extra_pms: &[&str]) -> PathBuf {
 /// installs interleave in the log and serialized ones cannot.
 fn fake_pm(dir: &Path, pm: &str) {
     let script = dir.join("fakebin").join(pm);
-    std::fs::write(
-        &script,
-        format!(
-            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 1.0.0; exit 0; fi\necho '{pm} \
-             start' >> \"$RUNNER_TEST_LOG\"\nsleep 0.3\necho '{pm} end' >> \"$RUNNER_TEST_LOG\"\n"
-        ),
-    )
-    .expect("write fake pm");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
-            .expect("chmod fake pm");
-    }
+    let contents = format!(
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 1.0.0; exit 0; fi\necho '{pm} start' \
+         >> \"$RUNNER_TEST_LOG\"\nsleep 0.3\necho '{pm} end' >> \"$RUNNER_TEST_LOG\"\n"
+    );
+    write_executable(&script, &contents);
+}
+
+fn write_executable(path: &Path, contents: &str) {
+    use std::io::Write as _;
+    let mut child = std::process::Command::new("sh")
+        .args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "sh"])
+        .arg(path)
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .expect("sh writes the executable");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(contents.as_bytes())
+        .expect("contents written");
+    assert!(child.wait().expect("sh exits").success());
 }
 
 fn install_in(dir: &Path, env: &[(&str, &str)]) -> (Output, String) {
@@ -71,13 +80,11 @@ fn install_in(dir: &Path, env: &[(&str, &str)]) -> (Output, String) {
         paths.extend(std::env::split_paths(&path));
     }
     let path = std::env::join_paths(paths).expect("test PATH entries are valid");
-    let mut cmd = Command::new(runner_binary());
+    let mut cmd = support::command(runner_binary());
     cmd.arg("install")
         .current_dir(dir)
         .env("PATH", path)
-        .env("RUNNER_TEST_LOG", &log)
-        .env_remove("RUNNER_INSTALL_PMS")
-        .env_remove("RUNNER_INSTALL_ON_COLLISION");
+        .env("RUNNER_TEST_LOG", &log);
     for (key, value) in env {
         cmd.env(key, value);
     }
@@ -108,7 +115,7 @@ fn only_the_resolved_writer_installs_the_shared_tree() {
 #[test]
 fn no_warnings_keeps_the_shadowed_installer_notice() {
     let dir = colliding_project("shadow-notice", &[]);
-    let (output, _) = install_in(&dir, &[("RUNNER_NO_WARNINGS", "1")]);
+    let (output, _) = install_in(&dir, &[("RUNNER_WARNINGS", "0")]);
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     let _ = std::fs::remove_dir_all(&dir);
 
@@ -131,76 +138,61 @@ fn quiet_hides_runner_install_text_but_runs_installer() {
         log.lines().collect::<Vec<_>>(),
         vec!["bun start", "bun end"]
     );
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout.len(), 0);
     assert!(output.stderr.is_empty(), "stderr: {stderr}");
-}
-
-#[test]
-fn naming_both_writers_runs_them_one_after_another() {
-    let dir = colliding_project("consent", &[]);
-    let (output, log) = install_in(&dir, &[("RUNNER_INSTALL_PMS", "bun,deno")]);
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    let _ = std::fs::remove_dir_all(&dir);
-
-    assert!(output.status.success(), "install failed: {stderr}");
-    // Not merely "both ran": bun must be *finished* before deno starts, or the
-    // two are writing one node_modules at once.
-    assert_eq!(
-        log.lines().collect::<Vec<_>>(),
-        vec!["bun start", "bun end", "deno start", "deno end"],
-        "writers of one tree must not overlap: {log}",
-    );
-    assert!(
-        stderr.contains("all install into node_modules/"),
-        "the redundant second install still warrants a warning: {stderr}",
-    );
 }
 
 #[test]
 fn managers_with_their_own_install_dirs_still_overlap() {
     let dir = colliding_project("parallel", &["cargo"]);
-    let (output, log) = install_in(&dir, &[("RUNNER_INSTALL_PMS", "bun,deno,cargo")]);
+    let (output, log) = install_in(&dir, &[]);
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     let _ = std::fs::remove_dir_all(&dir);
 
     assert!(output.status.success(), "install failed: {stderr}");
     let lines: Vec<&str> = log.lines().collect();
-    // cargo writes `target/`, so it has no reason to wait for the node_modules
-    // lane: it must start before that lane has finished.
     let cargo_start = lines
         .iter()
         .position(|l| *l == "cargo start")
         .unwrap_or_else(|| panic!("cargo never ran: {log}"));
-    let deno_end = lines
+    let bun_end = lines
         .iter()
-        .position(|l| *l == "deno end")
-        .unwrap_or_else(|| panic!("deno never finished: {log}"));
+        .position(|l| *l == "bun end")
+        .unwrap_or_else(|| panic!("bun never finished: {log}"));
     assert!(
-        cargo_start < deno_end,
+        cargo_start < bun_end,
         "cargo must overlap the node_modules lane, not queue behind it: {log}",
     );
-    let bun_end = lines.iter().position(|l| *l == "bun end").expect("bun ran");
-    let deno_start = lines
-        .iter()
-        .position(|l| *l == "deno start")
-        .expect("deno ran");
-    assert!(
-        bun_end < deno_start,
-        "the two node_modules writers still must not overlap: {log}",
-    );
+    assert!(!log.contains("deno"), "deno is shadowed: {log}");
+}
+
+/// bun and npm lockfiles side by side, where npm reaches the install set
+/// through the core resolver alone.
+fn two_lockfile_project(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("runner-collision-{}-{name}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("fakebin")).expect("create project dir");
+    std::fs::write(dir.join("package.json"), r#"{"name":"collide"}"#).expect("package.json");
+    std::fs::write(dir.join("bun.lock"), "").expect("bun.lock");
+    std::fs::write(dir.join("package-lock.json"), "{}").expect("package-lock.json");
+    for pm in ["bun", "npm"] {
+        fake_pm(&dir, pm);
+    }
+    dir
 }
 
 #[test]
-fn on_collision_error_installs_nothing() {
-    let dir = colliding_project("error", &[]);
-    let (output, log) = install_in(&dir, &[("RUNNER_INSTALL_ON_COLLISION", "error")]);
+fn a_second_lockfile_writer_is_shadowed() {
+    let dir = two_lockfile_project("resolver-writer");
+    let (output, log) = install_in(&dir, &[]);
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     let _ = std::fs::remove_dir_all(&dir);
 
-    assert_eq!(output.status.code(), Some(2), "stderr: {stderr}");
-    assert!(
-        log.is_empty(),
-        "refusing to pick means refusing to install, not installing first: {log}",
+    assert!(output.status.success(), "install failed: {stderr}");
+    assert_eq!(
+        log.lines().count(),
+        2,
+        "one writer owns node_modules: {log}"
     );
-    assert!(stderr.contains("node_modules"), "stderr: {stderr}");
+    assert!(stderr.contains("shadowed"), "stderr: {stderr}");
 }

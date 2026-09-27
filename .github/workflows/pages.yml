@@ -4,7 +4,9 @@ on: { push: { branches: [master], paths: [schemas/**] } }
 permissions: { contents: read, id-token: write, pages: write }
 jobs:
   upload:
+    if: github.repository == 'kjanat/runner'
     runs-on: ubuntu-slim
+    timeout-minutes: 10
     environment: { name: github-pages, url: "${{ steps.deployment.outputs.page_url }}" }
     steps: [
       { uses: actions/checkout@v7, with: { sparse-checkout: schemas/*.schema.json, sparse-checkout-cone-mode: false } },

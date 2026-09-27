@@ -17,11 +17,10 @@ const quietCountFromArgs = (name, args) => {
 	const valueFlags = new Set([
 		"--dir",
 		"--pm",
-		"--runner",
 		"--runtime",
-		"--fallback",
-		"--on-mismatch",
-		"--host-stream",
+		"--source",
+		"--package",
+		"--on-fail",
 		"--schema-version",
 	]);
 	const builtins = new Set([

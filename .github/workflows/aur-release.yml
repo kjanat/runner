@@ -10,10 +10,14 @@ on:
       tag: { description: Release tag to publish (e.g. v0.12.1), required: true, type: string }
       dry-run: { description: Prepare + validate PKGBUILDs but do not push to AUR, required: true, default: false, type: boolean }
 
+permissions: {}
+
 jobs:
   aur:
     name: ${{ format('{0} {1}', case(github.event_name == 'workflow_dispatch' && inputs.dry-run, 'dry-run', 'publish'), matrix.pkgname) }}
+    if: github.repository == 'kjanat/runner'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     # Serialize per-pkg so dispatch + release-published can't race the AUR push.
     concurrency: { group: "aur-publish-${{ matrix.pkgname }}", cancel-in-progress: false }
     strategy: { fail-fast: false, matrix: { pkgname: [runner-run, runner-run-bin] } }

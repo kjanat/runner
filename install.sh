@@ -1,4 +1,5 @@
-#!/bin/sh
+#!/usr/bin/env sh
+
 set -eu
 
 REPO="kjanat/runner"
@@ -20,10 +21,10 @@ Environment:
   XDG_BIN_HOME        Destination directory (overrides auto-detection)
 
 Without an override, reuses the directory of an existing runner install
-of ours (verified by its version banner; upgrade in place). Otherwise
-installs to ~/bin or ~/.local/bin, preferring a directory that is already
-on PATH (and, among those, one that already exists). Falls back to
-~/.local/bin.
+of ours (verified by its version banner; upgrade in place).
+Otherwise installs to ~/bin or ~/.local/bin, preferring a directory that is
+already on PATH (and, among those, one that already exists).
+Falls back to ~/.local/bin.
 EOF
 }
 

@@ -1,128 +1,124 @@
-//! Source-label dispatcher.
-//!
-//! Two surfaces disagree on one label: `doctor`/`why`'s structured
-//! reports name a cargo alias task's mechanism `"cargo-alias"` (the
-//! `provider` field already carries `"cargo"`), while `list`/`info`'s
-//! flat shape uses plain tool names throughout. [`flat_source_label`]
-//! and [`structured_source_label`] are the two call points; everything
-//! else defers to [`TaskSource::label`].
+//! Registry labels as JSON strings, and the task identities built from them.
 
-use std::path::{Path, PathBuf};
+use std::borrow::Cow;
 
-use crate::types::{JsRuntime, Task, TaskSource};
+use runner_core::{ProviderId, TaskTable};
+use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
+use serde::{Serialize, Serializer};
 
-/// Source label for the flat `list`/`info` shape ([`super::project`]).
-pub(crate) const fn flat_source_label(source: TaskSource) -> &'static str {
-    source.label()
+use crate::provider::Named;
+use crate::types::Task;
+
+/// The tool family that executes a task source's tasks: its own program, or
+/// its ecosystem when other tools read it.
+pub(crate) fn family(source: ProviderId) -> &'static str {
+    let provider = source.provider();
+    provider
+        .program
+        .map_or_else(|| source.ecosystem().label(), |_| provider.label)
 }
 
-/// Source label for the structured `doctor`/`why` reports. Only
-/// [`TaskSource::CargoAliases`] diverges from [`flat_source_label`], see
-/// module docs.
-pub(crate) const fn structured_source_label(source: TaskSource) -> &'static str {
-    match source {
-        TaskSource::CargoAliases => "cargo-alias",
-        _ => flat_source_label(source),
+fn enum_schema(labels: impl IntoIterator<Item = &'static str>) -> Schema {
+    let mut values: Vec<&str> = Vec::new();
+    for label in labels {
+        if !values.contains(&label) {
+            values.push(label);
+        }
     }
+    json_schema!({ "type": "string", "enum": values })
 }
 
-/// Build a task's fully-qualified name: `<scope>:<kind>#<name>`, where
-/// `scope` is `root` or the workspace member's name.
+macro_rules! provider_label {
+    ($(#[$doc:meta])* $name:ident, $schema:literal, $members:path, $label:path) => {
+        $(#[$doc])*
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        pub(crate) struct $name(pub(crate) ProviderId);
+
+        impl Serialize for $name {
+            fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                serializer.serialize_str($label(self.0))
+            }
+        }
+
+        impl JsonSchema for $name {
+            fn schema_name() -> Cow<'static, str> {
+                $schema.into()
+            }
+
+            fn json_schema(_: &mut SchemaGenerator) -> Schema {
+                enum_schema($members().into_iter().map($label))
+            }
+        }
+    };
+}
+
+provider_label!(
+    /// A task source, as its label.
+    SourceLabel,
+    "TaskSourceLabel",
+    crate::provider::task_sources,
+    Named::label
+);
+provider_label!(
+    /// A package manager, as its label.
+    PmLabel,
+    "PackageManagerLabel",
+    crate::provider::package_managers,
+    Named::label
+);
+provider_label!(
+    /// A JavaScript runtime, as its label.
+    RuntimeLabel,
+    "JsRuntimeLabel",
+    crate::provider::js_runtimes,
+    Named::label
+);
+provider_label!(
+    /// A task source, as the [`family`] that executes it.
+    FamilyLabel,
+    "ProviderLabel",
+    crate::provider::task_sources,
+    family
+);
+
+/// Build a task's fully-qualified name: `<scope>:<source>#<name>`, where
+/// `scope` is `root` or the workspace member's label.
 ///
-/// The `#` boundary separates the colon-joined structured prefix
-/// (`scope:kind`, both colon-free) from the verbatim task name, which may
-/// itself contain `:` (e.g. an npm script `fmt:update`). Consumers split
-/// once on `#`: everything after is the name, unescaped. Centralised here
-/// so `why` and `doctor` can't drift apart on the format.
+/// The `#` boundary separates the colon-joined prefix from the verbatim task
+/// name, which may itself contain `:` (an npm script `fmt:update`).
 pub(crate) fn fqn(task: &Task) -> String {
     fqn_of(task.scope(), task.source, &task.name)
 }
 
 /// [`fqn`] for a `(scope, source, name)` triple that has no [`Task`] yet,
 /// e.g. when matching `[tasks."root:just#fmt"]` config keys.
-pub(crate) fn fqn_of(scope: &str, source: TaskSource, name: &str) -> String {
-    format!(
-        "{scope}:{kind}#{name}",
-        kind = structured_source_label(source)
-    )
+pub(crate) fn fqn_of(scope: &str, source: ProviderId, name: &str) -> String {
+    format!("{scope}:{kind}#{name}", kind = source.label())
 }
 
-/// Key path (structured configs) or target name (flat files) locating the
-/// task inside its source file. Shared by `why` and `doctor` v3 so the two
-/// surfaces can't drift apart on the format.
+/// The key its source file keeps tasks under, e.g. `scripts`.
+pub(crate) fn task_container_key(source: ProviderId) -> Option<&'static str> {
+    match source.provider().caps.task_table {
+        TaskTable::Key(key) => Some(key),
+        TaskTable::Name | TaskTable::None => None,
+    }
+}
+
+/// Where the task sits inside its source file: a key path for structured
+/// configs (`scripts.test`), the target name for flat files.
 pub(crate) fn source_pointer(task: &Task) -> Option<String> {
-    let name = &task.name;
-    match task.source {
-        TaskSource::CargoAliases => Some(format!("alias.{name}")),
-        TaskSource::PackageJson => Some(format!("scripts.{name}")),
-        TaskSource::DenoJson
-        | TaskSource::TurboJson
-        | TaskSource::Taskfile
-        | TaskSource::MiseToml => Some(format!("tasks.{name}")),
-        TaskSource::BaconToml => Some(format!("jobs.{name}")),
-        TaskSource::PyprojectScripts => Some(format!("project.scripts.{name}")),
-        TaskSource::Makefile | TaskSource::Justfile => Some(name.clone()),
-        TaskSource::GoPackage => None,
+    match task.source.provider().caps.task_table {
+        TaskTable::Key(key) => Some(format!("{key}.{}", task.name)),
+        TaskTable::Name => Some(task.name.clone()),
+        TaskTable::None => None,
     }
 }
 
-/// Config file anchoring a task source (file paths, not parent dirs).
-/// Shared by `why` and `doctor` v3.
-pub(crate) fn source_anchor(source: TaskSource, root: &Path) -> Option<PathBuf> {
-    use crate::tool;
-
-    match source {
-        TaskSource::PackageJson => tool::node::find_manifest_upwards(root),
-        TaskSource::DenoJson => tool::deno::find_config_upwards(root),
-        TaskSource::TurboJson => tool::turbo::find_config(root),
-        TaskSource::Makefile => tool::files::find_first(root, tool::make::FILENAMES),
-        TaskSource::Justfile => tool::just::find_file(root),
-        TaskSource::Taskfile => tool::files::find_first(root, tool::go_task::FILENAMES),
-        TaskSource::CargoAliases => tool::cargo_aliases::find_anchor(root),
-        TaskSource::GoPackage => tool::go_pm::find_file(root),
-        TaskSource::BaconToml => tool::files::find_first(root, tool::bacon::FILENAMES),
-        TaskSource::MiseToml => tool::mise::find_file(root),
-        TaskSource::PyprojectScripts => tool::python::find_pyproject_upwards(root),
-    }
-}
-
-/// Effective command preview shared by `why` and `doctor` v3. Sources with
-/// a fixed executing binary resolve deterministically; `package.json` and
-/// `pyproject.toml` scripts depend on package-manager resolution, which the
-/// two callers perform differently (why: only for the selected candidate;
-/// doctor: project-wide). `node_pm`/`python_pm` take that result already
-/// resolved to a label. A forced `runtime` that dispatches the task reads
-/// its script through its own runner, so its preview outranks the resolved
-/// package manager, matching `cmd::run`'s dispatch.
-pub(crate) fn resolved_command(
-    task: &Task,
-    runtime: Option<JsRuntime>,
-    node_pm: Option<&str>,
-    python_pm: Option<&str>,
-) -> Option<String> {
-    let name = &task.name;
-    if let Some(rt) = runtime
-        && let Some(preview) = crate::cmd::run::runtime_script_preview(rt, task.source, name)
-    {
-        return Some(preview);
-    }
-    match task.source {
-        TaskSource::CargoAliases => Some(task.alias_of.as_deref().map_or_else(
-            || format!("cargo {name}"),
-            |expansion| format!("cargo {expansion}"),
-        )),
-        TaskSource::DenoJson => Some(format!("deno task {name}")),
-        TaskSource::TurboJson => Some(format!("turbo run {name}")),
-        TaskSource::Makefile => Some(format!("make {name}")),
-        TaskSource::Justfile => Some(format!("just {name}")),
-        TaskSource::Taskfile => Some(format!("task {name}")),
-        TaskSource::BaconToml => Some(format!("bacon {name}")),
-        TaskSource::MiseToml => Some(format!("mise run {name}")),
-        TaskSource::GoPackage => Some(format!(
-            "go run {target}",
-            target = task.run_target.as_deref().unwrap_or(name)
-        )),
-        TaskSource::PackageJson => node_pm.map(|pm| format!("{pm} run {name}")),
-        TaskSource::PyprojectScripts => python_pm.map(|pm| format!("{pm} run {name}")),
-    }
+/// Display argv from the completed execution plan.
+pub(crate) fn planned_command(plan: &runner_core::Plan) -> String {
+    plan.argv
+        .iter()
+        .map(|arg| arg.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join(" ")
 }

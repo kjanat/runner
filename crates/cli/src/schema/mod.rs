@@ -8,7 +8,7 @@
 //! - [`project`], the flat JSON shape ([`Project`], [`TaskListView`]) served by `list`/`info`
 //!   (and read internally by `doctor`'s human renderer).
 //! - [`doctor`], the structured `doctor --json` report.
-//! - [`labels::flat_source_label`] / [`labels::structured_source_label`], the two source-label conventions the shapes above use.
+//! - [`labels`], registry labels as JSON strings.
 //!
 //! There used to be three independently-versioned schemas (`list` at v2, `doctor`/`why` at v3, with v1 the original filename-style labels).
 //! Adoption never grew past internal use, so the versions were collapsed into one contract at v1.

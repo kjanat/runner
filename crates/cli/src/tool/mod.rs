@@ -1,80 +1,12 @@
-//! Per-tool modules: detection, task extraction, and command building.
-//!
-//! Each module corresponds to a single tool (package manager or task runner)
-//! and exposes a consistent set of public functions:
-//!
-//! - `detect(dir)`, returns `true` if the tool's config/lockfile exists
-//! - `extract_tasks(dir)`, parses config and returns task names or a parse error
-//! - `run_cmd(task, args)`, builds a [`std::process::Command`] to run a task
-//! - `quiet_capabilities()`, declares safe host-only diagnostic reduction
-//! - `install_cmd(frozen, scripts)`, builds a [`std::process::Command`] to install deps
-//! - `exec_cmd(args)`, builds a [`std::process::Command`] for ad-hoc execution
-//! - clean-dir constants, directories to remove on `runner clean`
-//!
-//! Not every module exposes every function; only what the tool supports. The
-//! audited host contract is documented in `docs/host-quiet-support-matrix.md`.
+//! Filesystem, git and spawn helpers, and the output policy shared by every
+//! command.
 
-/// bacon, Rust background checker (`bacon.toml`).
-pub(crate) mod bacon;
-/// Bun JavaScript runtime and package manager.
-pub(crate) mod bun;
-/// Bundler, the Ruby dependency manager (`Gemfile`).
-pub(crate) mod bundler;
-/// Cargo `[alias]` table, `.cargo/config.toml` aliases as runnable tasks.
-pub(crate) mod cargo_aliases;
-/// Cargo, the Rust package manager and build tool (`Cargo.toml`).
-pub(crate) mod cargo_pm;
-/// Composer, the PHP dependency manager (`composer.json`).
-pub(crate) mod composer;
-/// Deno JavaScript/TypeScript runtime (`deno.json` / `deno.jsonc`).
-pub(crate) mod deno;
-/// In-process execution of deno tasks via `deno_task_shell` (no deno binary).
-pub(crate) mod deno_exec;
-/// Shared filesystem helpers for tool modules.
+/// Shared filesystem helpers.
 pub(crate) mod files;
 /// Git queries used by detection.
 pub(crate) mod git;
-/// Go modules (`go.mod`).
-pub(crate) mod go_pm;
-/// go-task, a task runner using `Taskfile.yml`.
-pub(crate) mod go_task;
-/// just, a command runner using `justfile`.
-pub(crate) mod just;
-/// GNU Make (`Makefile`).
-pub(crate) mod make;
-/// mise, a polyglot dev tool manager (`mise.toml`).
-pub(crate) mod mise;
-/// Shared Node.js helpers: `package.json` parsing, script extraction, PM detection.
-pub(crate) mod node;
-/// npm, the default Node.js package manager (`package-lock.json`).
-pub(crate) mod npm;
-/// Nx monorepo build system (`nx.json`).
-pub(crate) mod nx;
-/// Detect `package.json` scripts that wrap a known task runner.
-pub(crate) mod passthrough;
-/// Pipenv, a Python dependency manager (`Pipfile`).
-pub(crate) mod pipenv;
-/// pnpm, a fast Node.js package manager (`pnpm-lock.yaml`).
-pub(crate) mod pnpm;
-/// Poetry, a Python dependency manager (`poetry.lock`, `pyproject.toml`).
-pub(crate) mod poetry;
 /// Spawn helper with Windows-aware PATH/PATHEXT resolution.
 pub(crate) mod program;
-/// Shared Python tooling helpers.
-pub(crate) mod python;
-/// Cross-platform in-process shell runner (`deno_task_shell`), reusable
-/// for any tool whose task bodies are shell command strings.
-pub(crate) mod shell;
-/// Turborepo monorepo build system (`turbo.json` / `turbo.jsonc`).
-pub(crate) mod turbo;
-/// uv, a fast Python package manager (`uv.lock`).
-pub(crate) mod uv;
-/// Volta toolchain manager, shim classification and `volta which` resolution.
-pub(crate) mod volta;
-/// Workspace member discovery from root declarations.
-pub(crate) mod workspace;
-/// Yarn, a Node.js package manager (`yarn.lock`).
-pub(crate) mod yarn;
 
 #[cfg(test)]
 pub(crate) mod test_support;
@@ -124,185 +56,287 @@ pub(crate) enum TaskStream {
     Discard,
 }
 
-/// Independent runner-authored output categories.
+/// One runner-authored output category.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "independent output categories"
-)]
-pub(crate) struct RunnerOutputPolicy {
-    pub progress: bool,
-    pub warnings: bool,
-    pub errors: bool,
-    pub groups: bool,
-    pub task_timing: bool,
-    pub summary: bool,
-    pub fatal_errors: bool,
+pub(crate) enum RunnerOutput {
+    Progress,
+    Warnings,
+    Errors,
+    Groups,
+    Timing,
+    Summary,
+    FatalErrors,
 }
+
+impl RunnerOutput {
+    pub(crate) const ALL: [Self; 7] = [
+        Self::Progress,
+        Self::Warnings,
+        Self::Errors,
+        Self::Groups,
+        Self::Timing,
+        Self::Summary,
+        Self::FatalErrors,
+    ];
+
+    /// The `[output]` key and report field naming this category.
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Progress => "progress",
+            Self::Warnings => "warnings",
+            Self::Errors => "errors",
+            Self::Groups => "groups",
+            Self::Timing => "timing",
+            Self::Summary => "summary",
+            Self::FatalErrors => "fatal_errors",
+        }
+    }
+
+    const fn bit(self) -> u8 {
+        match self {
+            Self::Progress => 1,
+            Self::Warnings => 1 << 1,
+            Self::Errors => 1 << 2,
+            Self::Groups => 1 << 3,
+            Self::Timing => 1 << 4,
+            Self::Summary => 1 << 5,
+            Self::FatalErrors => 1 << 6,
+        }
+    }
+}
+
+/// The runner-authored output categories an invocation shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RunnerOutputPolicy(u8);
 
 impl RunnerOutputPolicy {
-    pub(crate) const fn and(self, other: Self) -> Self {
-        Self {
-            progress: self.progress && other.progress,
-            warnings: self.warnings && other.warnings,
-            errors: self.errors && other.errors,
-            groups: self.groups && other.groups,
-            task_timing: self.task_timing && other.task_timing,
-            summary: self.summary && other.summary,
-            fatal_errors: self.fatal_errors && other.fatal_errors,
+    pub(crate) const ALL: Self = Self::of(&RunnerOutput::ALL);
+
+    /// Exactly `outputs` shown.
+    pub(crate) const fn of(outputs: &[RunnerOutput]) -> Self {
+        let mut bits = 0;
+        let mut index = 0;
+        while index < outputs.len() {
+            bits |= outputs[index].bit();
+            index += 1;
         }
+        Self(bits)
+    }
+
+    pub(crate) const fn shows(self, output: RunnerOutput) -> bool {
+        self.0 & output.bit() != 0
     }
 }
 
-/// Effective output policy. Quiet levels are presets over these axes; task
-/// streams never change from a quiet preset.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct OutputPolicy {
-    pub runner: RunnerOutputPolicy,
-    pub host_diagnostics: HostDiagnostics,
-}
-
-impl Default for OutputPolicy {
-    fn default() -> Self {
-        Self::from_quiet(QuietLevel::Off)
-    }
-}
-
-impl OutputPolicy {
-    pub(crate) const fn from_quiet(level: QuietLevel) -> Self {
-        match level {
-            QuietLevel::Off => Self {
-                runner: RunnerOutputPolicy {
-                    progress: true,
-                    warnings: true,
-                    errors: true,
-                    groups: true,
-                    task_timing: true,
-                    summary: true,
-                    fatal_errors: true,
-                },
-                host_diagnostics: HostDiagnostics::Normal,
-            },
-            QuietLevel::Quiet => Self {
-                runner: RunnerOutputPolicy {
-                    progress: false,
-                    warnings: true,
-                    errors: true,
-                    groups: false,
-                    task_timing: false,
-                    summary: false,
-                    fatal_errors: true,
-                },
-                host_diagnostics: HostDiagnostics::Normal,
-            },
-            QuietLevel::VeryQuiet => Self {
-                runner: RunnerOutputPolicy {
-                    progress: false,
-                    warnings: false,
-                    errors: true,
-                    groups: false,
-                    task_timing: false,
-                    summary: false,
-                    fatal_errors: true,
-                },
-                host_diagnostics: HostDiagnostics::Quiet,
-            },
-            QuietLevel::Silent => Self {
-                runner: RunnerOutputPolicy {
-                    progress: false,
-                    warnings: false,
-                    errors: false,
-                    groups: false,
-                    task_timing: false,
-                    summary: false,
-                    fatal_errors: true,
-                },
-                host_diagnostics: HostDiagnostics::Reduced,
-            },
-            QuietLevel::Mute => Self {
-                runner: RunnerOutputPolicy {
-                    progress: false,
-                    warnings: false,
-                    errors: false,
-                    groups: false,
-                    task_timing: false,
-                    summary: false,
-                    fatal_errors: false,
-                },
-                host_diagnostics: HostDiagnostics::Reduced,
-            },
+impl std::fmt::Display for RunnerOutputPolicy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (index, output) in RunnerOutput::ALL.into_iter().enumerate() {
+            let separator = if index == 0 { "" } else { " " };
+            write!(f, "{separator}{}={}", output.label(), self.shows(output))?;
         }
+        Ok(())
     }
 }
 
-/// Audited host capabilities. `quiet_args` contains only static host flags,
-/// never task arguments, so `--explain` can report it without leaking input.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct HostQuietCapabilities {
-    pub max_diagnostics: HostDiagnostics,
-    pub quiet_args: &'static [&'static str],
-    pub matrix_id: &'static str,
-    pub limitation: &'static str,
-    pub diverts_to_stderr: bool,
-}
-
-impl HostQuietCapabilities {
-    pub(crate) const fn quiet(
-        matrix_id: &'static str,
-        quiet_args: &'static [&'static str],
-    ) -> Self {
-        Self {
-            max_diagnostics: HostDiagnostics::Quiet,
-            quiet_args,
-            matrix_id,
-            limitation: "no stronger task-output-preserving reduction",
-            diverts_to_stderr: false,
+impl serde::Serialize for RunnerOutputPolicy {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap as _;
+        let mut map = serializer.serialize_map(Some(RunnerOutput::ALL.len()))?;
+        for output in RunnerOutput::ALL {
+            map.serialize_entry(output.label(), &self.shows(output))?;
         }
-    }
-
-    pub(crate) const fn unsupported(matrix_id: &'static str, limitation: &'static str) -> Self {
-        Self {
-            max_diagnostics: HostDiagnostics::Normal,
-            quiet_args: &[],
-            matrix_id,
-            limitation,
-            diverts_to_stderr: false,
-        }
-    }
-
-    pub(crate) const fn with_stderr_diversion(mut self) -> Self {
-        self.diverts_to_stderr = true;
-        self
+        map.end()
     }
 }
 
-/// Whether to keep the host's **stdout** clean by diverting its diagnostics to
-/// stderr. Orthogonal to [`QuietLevel`]: a caller can ask for a clean stdout
-/// pipeline without silencing, or silence without diverting.
-///
-/// Only pnpm exposes the primitive (`--use-stderr`); every other host no-ops
-/// this request silently.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) enum Stream {
-    /// Leave the host's stream routing untouched (stdout stays stdout).
-    #[default]
-    Inherit,
-    /// Ask the host to write its own diagnostics to stderr, leaving stdout for
-    /// the task's output (pnpm `--use-stderr`).
-    Stderr,
+impl schemars::JsonSchema for RunnerOutputPolicy {
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "RunnerOutputPolicy".into()
+    }
+
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        let labels = RunnerOutput::ALL.map(RunnerOutput::label);
+        let properties: serde_json::Map<String, serde_json::Value> = labels
+            .iter()
+            .map(|label| {
+                (
+                    (*label).to_owned(),
+                    serde_json::json!({ "type": "boolean" }),
+                )
+            })
+            .collect();
+        schemars::json_schema!({
+            "type": "object",
+            "properties": properties,
+            "required": labels,
+        })
+    }
 }
 
-/// The resolved, per-task verbosity intent handed to a host's `run_cmd`.
-///
-/// Combines the two orthogonal axes ([`QuietLevel`] and [`Stream`]). Each host
-/// translates the parts it can express into its own flags and ignores the
-/// rest; nothing here is an error when a host lacks a mechanism.
+/// The resolved, per-task host verbosity handed to a host's command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) struct HostVerbosity {
     /// How much of the host's own logging to suppress.
     pub diagnostics: HostDiagnostics,
-    /// Whether to divert the host's diagnostics to stderr.
-    pub stream: Stream,
+}
+
+/// The output settings one layer (command line, environment, a task's config,
+/// the project's config) sets, each unset setting left to the layers below.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct OutputChoice {
+    set: u8,
+    shown: u8,
+    tool: Option<HostDiagnostics>,
+    stdout: Option<bool>,
+    stderr: Option<bool>,
+}
+
+/// The output an invocation or a task ends up with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Resolved {
+    pub runner: RunnerOutputPolicy,
+    pub tool: HostDiagnostics,
+    pub stdout: TaskStream,
+    pub stderr: TaskStream,
+}
+
+impl OutputChoice {
+    /// The settings `-q` repeated `level` times turns off.
+    pub(crate) const fn preset(level: QuietLevel) -> Self {
+        let hidden: &[RunnerOutput] = match level {
+            QuietLevel::Off => &[],
+            QuietLevel::Quiet => &[
+                RunnerOutput::Progress,
+                RunnerOutput::Groups,
+                RunnerOutput::Timing,
+                RunnerOutput::Summary,
+            ],
+            QuietLevel::VeryQuiet => &[
+                RunnerOutput::Progress,
+                RunnerOutput::Groups,
+                RunnerOutput::Timing,
+                RunnerOutput::Summary,
+                RunnerOutput::Warnings,
+            ],
+            QuietLevel::Silent => &[
+                RunnerOutput::Progress,
+                RunnerOutput::Groups,
+                RunnerOutput::Timing,
+                RunnerOutput::Summary,
+                RunnerOutput::Warnings,
+                RunnerOutput::Errors,
+            ],
+            QuietLevel::Mute => &RunnerOutput::ALL,
+        };
+        let set = RunnerOutputPolicy::of(hidden).0;
+        Self {
+            set,
+            shown: 0,
+            tool: match level {
+                QuietLevel::Off | QuietLevel::Quiet => None,
+                QuietLevel::VeryQuiet => Some(HostDiagnostics::Quiet),
+                QuietLevel::Silent | QuietLevel::Mute => Some(HostDiagnostics::Reduced),
+            },
+            stdout: None,
+            stderr: None,
+        }
+    }
+
+    /// This layer with `output` set to `shown`.
+    #[must_use]
+    pub(crate) const fn with(mut self, output: RunnerOutput, shown: bool) -> Self {
+        self.set |= output.bit();
+        if shown {
+            self.shown |= output.bit();
+        } else {
+            self.shown &= !output.bit();
+        }
+        self
+    }
+
+    /// This layer with `output` set when `shown` is.
+    #[must_use]
+    pub(crate) const fn with_some(self, output: RunnerOutput, shown: Option<bool>) -> Self {
+        match shown {
+            Some(shown) => self.with(output, shown),
+            None => self,
+        }
+    }
+
+    /// This layer with the tool's quiet flag requested or not, when `quiet` is set.
+    #[must_use]
+    pub(crate) const fn with_tool_quiet(mut self, quiet: Option<bool>) -> Self {
+        if let Some(quiet) = quiet {
+            self.tool = Some(if quiet {
+                HostDiagnostics::Quiet
+            } else {
+                HostDiagnostics::Normal
+            });
+        }
+        self
+    }
+
+    /// This layer with the task's streams shown or discarded, where set.
+    #[must_use]
+    pub(crate) const fn with_streams(mut self, stdout: Option<bool>, stderr: Option<bool>) -> Self {
+        if stdout.is_some() {
+            self.stdout = stdout;
+        }
+        if stderr.is_some() {
+            self.stderr = stderr;
+        }
+        self
+    }
+
+    /// `self` where it sets a value, `lower` elsewhere.
+    #[must_use]
+    pub(crate) const fn over(self, lower: Self) -> Self {
+        Self {
+            set: self.set | lower.set,
+            shown: (self.shown & self.set) | (lower.shown & lower.set & !self.set),
+            tool: if self.tool.is_some() {
+                self.tool
+            } else {
+                lower.tool
+            },
+            stdout: if self.stdout.is_some() {
+                self.stdout
+            } else {
+                lower.stdout
+            },
+            stderr: if self.stderr.is_some() {
+                self.stderr
+            } else {
+                lower.stderr
+            },
+        }
+    }
+
+    /// The output with every unset setting at its default: everything shown,
+    /// the tool at its own verbosity.
+    pub(crate) const fn resolve(self) -> Resolved {
+        const fn stream(shown: Option<bool>) -> TaskStream {
+            match shown {
+                Some(false) => TaskStream::Discard,
+                _ => TaskStream::Inherit,
+            }
+        }
+        Resolved {
+            runner: RunnerOutputPolicy(
+                (self.shown & self.set) | (RunnerOutputPolicy::ALL.0 & !self.set),
+            ),
+            tool: match self.tool {
+                Some(tool) => tool,
+                None => HostDiagnostics::Normal,
+            },
+            stdout: stream(self.stdout),
+            stderr: stream(self.stderr),
+        }
+    }
 }
 
 impl QuietLevel {
@@ -329,20 +363,7 @@ impl QuietLevel {
         }
     }
 
-    /// Parse a config/label spelling (`off` | `quiet` | `very-quiet` |
-    /// `silent`). Returns `None` for anything else so callers can warn.
-    pub(crate) fn from_label(raw: &str) -> Option<Self> {
-        match raw.trim() {
-            "off" => Some(Self::Off),
-            "quiet" => Some(Self::Quiet),
-            "very-quiet" => Some(Self::VeryQuiet),
-            "silent" => Some(Self::Silent),
-            "mute" => Some(Self::Mute),
-            _ => None,
-        }
-    }
-
-    /// The canonical label, the inverse of [`Self::from_label`].
+    /// The canonical label.
     pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::Off => "off",
@@ -352,15 +373,6 @@ impl QuietLevel {
             Self::Mute => "mute",
         }
     }
-
-    /// Every level, loudest first, for building "expected one of …" messages.
-    pub(crate) const ALL: [Self; 5] = [
-        Self::Off,
-        Self::Quiet,
-        Self::VeryQuiet,
-        Self::Silent,
-        Self::Mute,
-    ];
 }
 
 impl HostDiagnostics {
@@ -369,23 +381,6 @@ impl HostDiagnostics {
             Self::Normal => "normal",
             Self::Quiet => "quiet",
             Self::Reduced => "reduced",
-        }
-    }
-
-    pub(crate) fn from_label(raw: &str) -> Option<Self> {
-        match raw.trim() {
-            "normal" | "off" => Some(Self::Normal),
-            "quiet" => Some(Self::Quiet),
-            "reduced" | "very-quiet" | "silent" | "mute" => Some(Self::Reduced),
-            _ => None,
-        }
-    }
-
-    pub(crate) const fn from_legacy_quiet(level: QuietLevel) -> Self {
-        match level {
-            QuietLevel::Off => Self::Normal,
-            QuietLevel::Quiet => Self::Quiet,
-            QuietLevel::VeryQuiet | QuietLevel::Silent | QuietLevel::Mute => Self::Reduced,
         }
     }
 }
@@ -397,53 +392,11 @@ impl TaskStream {
             Self::Discard => "discard",
         }
     }
-
-    pub(crate) fn from_label(raw: &str) -> Option<Self> {
-        match raw.trim() {
-            "inherit" => Some(Self::Inherit),
-            "discard" => Some(Self::Discard),
-            _ => None,
-        }
-    }
-}
-
-impl Stream {
-    /// Parse a config/label spelling (`inherit` | `stderr`). `None` otherwise.
-    pub(crate) fn from_label(raw: &str) -> Option<Self> {
-        match raw.trim() {
-            "inherit" => Some(Self::Inherit),
-            "stderr" => Some(Self::Stderr),
-            _ => None,
-        }
-    }
-
-    /// The canonical label, the inverse of [`Self::from_label`].
-    pub(crate) const fn label(self) -> &'static str {
-        match self {
-            Self::Inherit => "inherit",
-            Self::Stderr => "stderr",
-        }
-    }
-
-    /// Both variants, for "expected one of …" messages.
-    pub(crate) const ALL: [Self; 2] = [Self::Inherit, Self::Stderr];
-}
-
-impl HostVerbosity {
-    /// Whether the applied host plan includes its safe quiet flag.
-    pub(crate) fn silences(self) -> bool {
-        self.diagnostics >= HostDiagnostics::Quiet
-    }
-
-    /// `true` when stdout should be kept clean by moving diagnostics to stderr.
-    pub(crate) fn diverts_to_stderr(self) -> bool {
-        self.stream == Stream::Stderr
-    }
 }
 
 #[cfg(test)]
 mod quiet_policy_tests {
-    use super::{HostDiagnostics, OutputPolicy, QuietLevel};
+    use super::{HostDiagnostics, OutputChoice, QuietLevel, RunnerOutput, TaskStream};
 
     #[test]
     fn quiet_counts_have_four_distinct_levels_and_clamp() {
@@ -457,37 +410,31 @@ mod quiet_policy_tests {
 
     #[test]
     fn host_diagnostics_begin_at_second_quiet_level() {
-        assert_eq!(
-            OutputPolicy::from_quiet(QuietLevel::Quiet).host_diagnostics,
-            HostDiagnostics::Normal
-        );
-        assert_eq!(
-            OutputPolicy::from_quiet(QuietLevel::VeryQuiet).host_diagnostics,
-            HostDiagnostics::Quiet
-        );
+        let tool = |level| OutputChoice::preset(level).resolve().tool;
+        assert_eq!(tool(QuietLevel::Quiet), HostDiagnostics::Normal);
+        assert_eq!(tool(QuietLevel::VeryQuiet), HostDiagnostics::Quiet);
+        assert_eq!(tool(QuietLevel::Mute), HostDiagnostics::Reduced);
     }
-}
 
-/// What an install command should do with lifecycle scripts.
-///
-/// Lowered from `crate::resolver::ScriptPolicy` at the install dispatch
-/// boundary so the per-tool `install_cmd` builders stay decoupled from the
-/// resolver. Each manager translates this into its own flag/env (or no-ops
-/// where it cannot express the request, `cmd::install` warns about those).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) enum ScriptDirective {
-    /// Leave the package manager at its built-in default, add nothing.
-    #[default]
-    Default,
-    /// Skip lifecycle scripts where the manager exposes a skip mechanism
-    /// (npm/yarn-classic/pnpm/bun `--ignore-scripts`, composer `--no-scripts`,
-    /// yarn-berry `YARN_ENABLE_SCRIPTS=false`).
-    Deny,
-    /// Force lifecycle scripts on where the manager exposes a mechanism
-    /// (npm `--no-ignore-scripts`, yarn-berry `YARN_ENABLE_SCRIPTS=true`,
-    /// deno `--allow-scripts`). Managers that already run scripts by default
-    /// (composer, cargo, go, bundler, the Python backends, yarn-classic) need
-    /// nothing; pnpm/bun gate dependency build scripts behind a manifest
-    /// allowlist runner won't write, so the flag cannot express it.
-    ForceOn,
+    #[test]
+    fn a_higher_layer_wins_only_where_it_sets_a_value() {
+        let project = OutputChoice::default()
+            .with(RunnerOutput::Timing, false)
+            .with(RunnerOutput::Progress, false)
+            .with_streams(Some(true), Some(false));
+        let task = OutputChoice::default()
+            .with(RunnerOutput::Timing, true)
+            .with_streams(None, Some(true));
+        let resolved = task.over(project).resolve();
+        assert!(resolved.runner.shows(RunnerOutput::Timing));
+        assert!(!resolved.runner.shows(RunnerOutput::Progress));
+        assert!(resolved.runner.shows(RunnerOutput::Summary));
+        assert_eq!(resolved.stdout, TaskStream::Inherit);
+        assert_eq!(resolved.stderr, TaskStream::Inherit);
+        let quiet = OutputChoice::preset(QuietLevel::Quiet).over(task.over(project));
+        assert!(!quiet.resolve().runner.shows(RunnerOutput::Timing));
+        let explicit =
+            OutputChoice::preset(QuietLevel::VeryQuiet).with(RunnerOutput::Warnings, true);
+        assert!(explicit.resolve().runner.shows(RunnerOutput::Warnings));
+    }
 }

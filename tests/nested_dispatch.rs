@@ -15,7 +15,8 @@
 //! a real `node_modules` bin and a `make` recipe reach the shell.
 #![cfg(unix)]
 
-use std::os::unix::fs::PermissionsExt as _;
+mod support;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -54,11 +55,10 @@ impl TempProject {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).expect("create parent dir");
         }
-        std::fs::write(&path, contents).expect("write project file");
         if executable {
-            let mut perms = std::fs::metadata(&path).expect("stat").permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&path, perms).expect("chmod +x");
+            write_executable(&path, contents);
+        } else {
+            std::fs::write(&path, contents).expect("write project file");
         }
     }
 
@@ -71,6 +71,23 @@ impl Drop for TempProject {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.path);
     }
+}
+
+fn write_executable(path: &Path, contents: &str) {
+    use std::io::Write as _;
+    let mut child = Command::new("sh")
+        .args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "sh"])
+        .arg(path)
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .expect("sh writes the executable");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(contents.as_bytes())
+        .expect("contents written");
+    assert!(child.wait().expect("sh exits").success());
 }
 
 fn run_binary() -> PathBuf {
@@ -119,16 +136,7 @@ fn run_once(dir: &Path, args: &[&str]) -> Output {
     )
     .expect("PATH joins");
 
-    let mut cmd = Command::new(&binary);
-    for (key, _) in std::env::vars_os() {
-        if key
-            .to_string_lossy()
-            .to_ascii_uppercase()
-            .starts_with("RUNNER_")
-        {
-            cmd.env_remove(&key);
-        }
-    }
+    let mut cmd = support::command(&binary);
     cmd.env("PATH", joined)
         .arg("--dir")
         .arg(dir)
@@ -278,17 +286,17 @@ fn explain_names_the_local_package_and_the_binary_it_picked() {
 
     let output = run_in(
         proj.path(),
-        &["--explain", "@typescript/native", "--noEmit"],
+        &["--dry-run", "@typescript/native", "--noEmit"],
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert!(
         stderr.contains("tsc from") && stderr.contains("local dependency"),
-        "--explain must show which binary of which package ran. stderr: {stderr}",
+        "--dry-run must show which binary of which package ran. stderr: {stderr}",
     );
     assert!(
         stderr.contains("@typescript/native"),
-        "--explain must name the package directory. stderr: {stderr}",
+        "--dry-run must name the package directory. stderr: {stderr}",
     );
 }
 

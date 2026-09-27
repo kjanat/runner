@@ -26,7 +26,10 @@ pub(crate) trait LineSink: Send + Sync {
     /// Write `line` to the appropriate stream, prefixed with `prefix`.
     /// Implementations must acquire whatever lock guards the underlying
     /// stream *per call* and release it before returning.
-    fn emit(&self, prefix: &str, is_stderr: bool, line: &str);
+    ///
+    /// # Errors
+    /// Returns the failed write.
+    fn emit(&self, prefix: &str, is_stderr: bool, line: &str) -> io::Result<()>;
 }
 
 /// Production sink. Locks `std::io::stdout` / `std::io::stderr` per
@@ -34,22 +37,19 @@ pub(crate) trait LineSink: Send + Sync {
 pub(crate) struct StdioSink;
 
 impl LineSink for StdioSink {
-    fn emit(&self, prefix: &str, is_stderr: bool, line: &str) {
-        use std::io::Write;
+    fn emit(&self, prefix: &str, is_stderr: bool, line: &str) -> io::Result<()> {
+        let write = |h: &mut dyn Write| {
+            if prefix.is_empty() {
+                writeln!(h, "{line}")
+            } else {
+                writeln!(h, "{prefix} {line}")
+            }?;
+            h.flush()
+        };
         if is_stderr {
-            let mut h = io::stderr().lock();
-            let _ = if prefix.is_empty() {
-                writeln!(h, "{line}")
-            } else {
-                writeln!(h, "{prefix} {line}")
-            };
+            write(&mut io::stderr().lock())
         } else {
-            let mut h = io::stdout().lock();
-            let _ = if prefix.is_empty() {
-                writeln!(h, "{line}")
-            } else {
-                writeln!(h, "{prefix} {line}")
-            };
+            write(&mut io::stdout().lock())
         }
     }
 }
@@ -73,10 +73,42 @@ impl SelectiveSink {
 }
 
 impl LineSink for SelectiveSink {
-    fn emit(&self, prefix: &str, is_stderr: bool, line: &str) {
+    fn emit(&self, prefix: &str, is_stderr: bool, line: &str) -> io::Result<()> {
         if (is_stderr && self.stderr) || (!is_stderr && self.stdout) {
-            self.inner.emit(prefix, is_stderr, line);
+            self.inner.emit(prefix, is_stderr, line)
+        } else {
+            Ok(())
         }
+    }
+}
+
+/// Records whether any line written through it failed to reach its stream.
+pub(crate) struct Delivery {
+    inner: Arc<dyn LineSink>,
+    failed: AtomicBool,
+}
+
+impl Delivery {
+    pub(crate) fn new(inner: Arc<dyn LineSink>) -> Self {
+        Self {
+            inner,
+            failed: AtomicBool::new(false),
+        }
+    }
+
+    /// Whether a write failed.
+    pub(crate) fn failed(&self) -> bool {
+        self.failed.load(Ordering::SeqCst)
+    }
+}
+
+impl LineSink for Delivery {
+    fn emit(&self, prefix: &str, is_stderr: bool, line: &str) -> io::Result<()> {
+        let written = self.inner.emit(prefix, is_stderr, line);
+        if written.is_err() {
+            self.failed.store(true, Ordering::SeqCst);
+        }
+        written
     }
 }
 
@@ -160,6 +192,11 @@ impl BufferSink {
         // Tokens from child `::stop-commands::<token>` directives whose paired
         // `::<token>::` resume should also be dropped (see the neutralize block).
         let mut stopped_tokens: Vec<Vec<u8>> = Vec::new();
+        let stop_commands = actions_rs::WorkflowCommand::new("stop-commands").to_string();
+        let group = actions_rs::WorkflowCommand::new("group").to_string();
+        let endgroup = actions_rs::WorkflowCommand::new("endgroup").to_string();
+        let resume = actions_rs::WorkflowCommand::new("token").to_string();
+        let (open, close) = resume.split_once("token").unwrap_or_default();
 
         loop {
             let mut stream = [0_u8; 1];
@@ -201,15 +238,15 @@ impl BufferSink {
                 // close) and every later annotation. Drop the directive and
                 // remember the token so its paired resume is dropped too; an
                 // unpaired resume falls through as a harmless unknown command.
-                if let Some(token) = line.strip_prefix(b"::stop-commands::".as_slice()) {
+                if let Some(token) = line.strip_prefix(stop_commands.as_bytes()) {
                     if !token.is_empty() {
                         stopped_tokens.push(token.to_vec());
                     }
                     continue;
                 }
                 if let Some(pos) = stopped_tokens.iter().position(|t| {
-                    line.strip_prefix(b"::".as_slice())
-                        .and_then(|inner| inner.strip_suffix(b"::".as_slice()))
+                    line.strip_prefix(open.as_bytes())
+                        .and_then(|inner| inner.strip_suffix(close.as_bytes()))
                         == Some(t.as_slice())
                 }) {
                     stopped_tokens.swap_remove(pos);
@@ -220,14 +257,14 @@ impl BufferSink {
                 // than emit a stray blank line); `::endgroup::` dropped.
                 // `::warning::`/`::error::`/`::notice::` annotations fall
                 // through verbatim.
-                if let Some(title) = line.strip_prefix(b"::group::".as_slice()) {
+                if let Some(title) = line.strip_prefix(group.as_bytes()) {
                     if !title.is_empty() {
                         out.write_all(title)?;
                         out.write_all(b"\n")?;
                     }
                     continue;
                 }
-                if line.starts_with(b"::endgroup::") {
+                if line.starts_with(endgroup.as_bytes()) {
                     continue;
                 }
             }
@@ -246,18 +283,16 @@ impl Drop for BufferSink {
 }
 
 impl LineSink for BufferSink {
-    fn emit(&self, _prefix: &str, is_stderr: bool, line: &str) {
+    fn emit(&self, _prefix: &str, is_stderr: bool, line: &str) -> io::Result<()> {
         if self.closed.load(Ordering::SeqCst) {
-            return;
+            return Ok(());
         }
 
-        let Some(len) = line
+        let len = line
             .len()
             .checked_add(1)
             .and_then(|len| u64::try_from(len).ok())
-        else {
-            return;
-        };
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "line too long"))?;
         let marker = if is_stderr {
             STREAM_STDERR
         } else {
@@ -267,20 +302,19 @@ impl LineSink for BufferSink {
         record_header[0] = marker;
         record_header[1..].copy_from_slice(&len.to_le_bytes());
 
-        let Ok(mut file) = self.file() else {
-            return;
+        let written = {
+            let mut file = self.file()?;
+            if self.closed.load(Ordering::SeqCst) {
+                return Ok(());
+            }
+            file.write_all(&record_header)
+                .and_then(|()| file.write_all(line.as_bytes()))
+                .and_then(|()| file.write_all(b"\n"))
         };
-        if self.closed.load(Ordering::SeqCst) {
-            return;
-        }
-        if file
-            .write_all(&record_header)
-            .and_then(|()| file.write_all(line.as_bytes()))
-            .and_then(|()| file.write_all(b"\n"))
-            .is_err()
-        {
+        if written.is_err() {
             self.close();
         }
+        written
     }
 }
 
@@ -322,7 +356,8 @@ pub(crate) fn render_prefix(name: &str, width: usize, colorize: bool) -> String 
 
 /// Spawn one reader thread per `(prefix, is_stderr, reader)` entry in
 /// `streams`. Each thread reads its `Read` line-by-line and pushes the
-/// result through `sink`. Returns the `Vec<JoinHandle<()>>` for the
+/// result through `sink`, draining the reader to its end whether or not
+/// `sink` accepts the lines; wrap `sink` in a [`Delivery`] to observe that. Returns the `Vec<JoinHandle<()>>` for the
 /// spawned threads. The caller joins each handle once the underlying
 /// pipes close (which happens naturally when each child process exits
 /// and the OS tears its stdio fds down).
@@ -339,9 +374,12 @@ where
             let sink = Arc::clone(sink);
             std::thread::spawn(move || {
                 let buf = BufReader::new(reader);
-                for line in buf.lines() {
-                    let Ok(line) = line else { return };
-                    sink.emit(&prefix, is_stderr, &line);
+                let mut lines = buf.lines();
+                while let Some(Ok(line)) = lines.next() {
+                    if sink.emit(&prefix, is_stderr, &line).is_err() {
+                        lines.by_ref().for_each(drop);
+                        return;
+                    }
                 }
             })
         })
@@ -373,11 +411,12 @@ mod tests {
     }
 
     impl LineSink for VecSink {
-        fn emit(&self, prefix: &str, is_stderr: bool, line: &str) {
+        fn emit(&self, prefix: &str, is_stderr: bool, line: &str) -> io::Result<()> {
             self.lines
                 .lock()
                 .unwrap()
                 .push((prefix.to_string(), is_stderr, line.to_string()));
+            Ok(())
         }
     }
 
@@ -412,8 +451,8 @@ mod tests {
     #[test]
     fn buffer_sink_replays_both_streams_to_original_destinations() {
         let sink = BufferSink::new().expect("buffer sink should open");
-        sink.emit("[ignored]", false, "first");
-        sink.emit("[ignored]", true, "second");
+        sink.emit("[ignored]", false, "first").unwrap();
+        sink.emit("[ignored]", true, "second").unwrap();
         sink.close();
 
         let mut stdout = Vec::new();
@@ -425,14 +464,27 @@ mod tests {
         assert_eq!(stderr, b"second\n");
     }
 
+    fn command(name: &'static str, message: &str) -> String {
+        actions_rs::WorkflowCommand::new(name)
+            .message(message)
+            .to_string()
+    }
+
+    fn warning(message: &str) -> String {
+        actions_rs::Annotation::new()
+            .command(actions_rs::AnnotationKind::Warning, message)
+            .to_string()
+    }
+
     #[test]
     fn replay_neutralizes_child_group_commands_when_enabled() {
         let sink = BufferSink::new().expect("buffer sink should open");
-        sink.emit("[i]", false, "::group::Building");
-        sink.emit("[i]", false, "compiling...");
-        sink.emit("[i]", false, "::endgroup::");
-        sink.emit("[i]", false, "::group::"); // titleless → dropped, no blank line
-        sink.emit("[i]", true, "::warning::heads up");
+        sink.emit("[i]", false, &command("group", "Building"))
+            .unwrap();
+        sink.emit("[i]", false, "compiling...").unwrap();
+        sink.emit("[i]", false, &command("endgroup", "")).unwrap();
+        sink.emit("[i]", false, &command("group", "")).unwrap();
+        sink.emit("[i]", true, &warning("heads up")).unwrap();
         sink.close();
 
         let mut stdout = Vec::new();
@@ -440,18 +492,15 @@ mod tests {
         sink.replay_to(&mut stdout, &mut stderr, true)
             .expect("buffer should replay");
 
-        // `::group::Building` → plain `Building`; `::endgroup::` and a titleless
-        // `::group::` dropped; a normal line is kept; the `::warning::`
-        // annotation stays verbatim.
         assert_eq!(stdout, b"Building\ncompiling...\n");
-        assert_eq!(stderr, b"::warning::heads up\n");
+        assert_eq!(stderr, format!("{}\n", warning("heads up")).as_bytes());
     }
 
     #[test]
     fn replay_without_neutralize_keeps_child_group_commands_verbatim() {
         let sink = BufferSink::new().expect("buffer sink should open");
-        sink.emit("[i]", false, "::group::X");
-        sink.emit("[i]", false, "::endgroup::");
+        sink.emit("[i]", false, &command("group", "X")).unwrap();
+        sink.emit("[i]", false, &command("endgroup", "")).unwrap();
         sink.close();
 
         let mut stdout = Vec::new();
@@ -459,20 +508,21 @@ mod tests {
         sink.replay_to(&mut stdout, &mut stderr, false)
             .expect("buffer should replay");
 
-        assert_eq!(stdout, b"::group::X\n::endgroup::\n");
+        assert_eq!(
+            stdout,
+            format!("{}\n{}\n", command("group", "X"), command("endgroup", "")).as_bytes()
+        );
     }
 
     #[test]
     fn replay_neutralizes_stop_commands_and_paired_resume() {
         let sink = BufferSink::new().expect("buffer sink should open");
-        // A child trying to disable command processing: the directive AND its
-        // matching resume must be dropped, or the parent's later `::endgroup::`
-        // (and annotations) would be swallowed.
-        sink.emit("[i]", false, "::stop-commands::abc123");
-        sink.emit("[i]", false, "real output");
-        sink.emit("[i]", false, "::abc123::"); // paired resume → dropped
-        sink.emit("[i]", false, "::other::"); // unpaired → harmless, kept
-        sink.emit("[i]", true, "::warning::kept");
+        sink.emit("[i]", false, &command("stop-commands", "abc123"))
+            .unwrap();
+        sink.emit("[i]", false, "real output").unwrap();
+        sink.emit("[i]", false, &command("abc123", "")).unwrap();
+        sink.emit("[i]", false, &command("other", "")).unwrap();
+        sink.emit("[i]", true, &warning("kept")).unwrap();
         sink.close();
 
         let mut stdout = Vec::new();
@@ -480,8 +530,33 @@ mod tests {
         sink.replay_to(&mut stdout, &mut stderr, true)
             .expect("buffer should replay");
 
-        assert_eq!(stdout, b"real output\n::other::\n");
-        assert_eq!(stderr, b"::warning::kept\n");
+        assert_eq!(
+            stdout,
+            format!("real output\n{}\n", command("other", "")).as_bytes()
+        );
+        assert_eq!(stderr, format!("{}\n", warning("kept")).as_bytes());
+    }
+
+    struct FullSink;
+
+    impl LineSink for FullSink {
+        fn emit(&self, _: &str, _: bool, _: &str) -> io::Result<()> {
+            Err(io::Error::from(io::ErrorKind::StorageFull))
+        }
+    }
+
+    #[test]
+    fn delivery_records_a_failed_write_and_readers_drain_past_it() {
+        let delivery = Arc::new(Delivery::new(Arc::new(FullSink)));
+        assert!(!delivery.failed());
+        let stream = io::Cursor::new(b"one\ntwo\n".to_vec());
+        for handle in spawn_readers(
+            vec![(String::new(), false, stream)],
+            &(Arc::clone(&delivery) as Arc<dyn LineSink>),
+        ) {
+            handle.join().unwrap();
+        }
+        assert!(delivery.failed());
     }
 
     #[test]
