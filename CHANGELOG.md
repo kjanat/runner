@@ -19,7 +19,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - [ ] Minor bumps: after publish, raise the `runner-run` catalog range to `^0.Y` and refresh `bun.lock`; `@latest` breaks `--frozen-lockfile`.
 - [ ] First release with `runner-run-core`, `runner-run-schemes` and `runner-run-providers`: add a `CARGO_REGISTRY_TOKEN` secret to the `crates-io` environment, release, then add a trusted publisher for each (workflow `release.yml`, environment `crates-io`) and delete the secret.
 
-## [0.27.0] - 2026-09-27
+## [0.27.0] - 2026-09-28
 
 ### Added
 
