@@ -160,6 +160,9 @@ serde.workspace = true
 workspace = true
 features  = ["parse", "serde"]
 
+[target."cfg(unix)".dependencies]
+rustix.workspace = true
+
 [features]
 default = ["lsp", "run"]
 # Editor language server (`runner lsp`): hover, completion, and diagnostics for

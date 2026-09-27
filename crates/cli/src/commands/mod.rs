@@ -140,7 +140,6 @@ fn configure_plan(
 /// in a directory of its own, and put that directory first on the plan's `PATH`.
 fn link_stand_in(plan: &mut runner_core::Plan) -> anyhow::Result<()> {
     use anyhow::{Context as _, bail};
-    use std::hash::{Hash as _, Hasher as _};
 
     let Some(stand_in) = plan.stand_in else {
         return Ok(());
@@ -169,13 +168,15 @@ fn link_stand_in(plan: &mut runner_core::Plan) -> anyhow::Result<()> {
     if !output.status.success() || !executable.is_file() {
         bail!("{program} did not report its executable, so it cannot stand in for {name}");
     }
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    executable.hash(&mut hasher);
-    let dir = std::env::temp_dir().join(format!("runner-{name}-{:016x}", hasher.finish()));
-    std::fs::create_dir_all(&dir).with_context(|| format!("cannot create {}", dir.display()))?;
+    let dir = private_link_dir(&std::env::temp_dir(), name, &executable)?;
     let link = dir.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
     if std::fs::canonicalize(&link).ok() != std::fs::canonicalize(&executable).ok() {
-        let _ = std::fs::remove_file(&link);
+        match std::fs::remove_file(&link) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                return Err(error).with_context(|| format!("cannot remove {}", link.display()));
+            }
+            _ => {}
+        }
         #[cfg(unix)]
         let linked = std::os::unix::fs::symlink(&executable, &link);
         #[cfg(windows)]
@@ -191,6 +192,58 @@ fn link_stand_in(plan: &mut runner_core::Plan) -> anyhow::Result<()> {
     }
     plan.path_prepend.insert(0, dir);
     Ok(())
+}
+
+fn private_link_dir(
+    base: &Path,
+    name: &str,
+    executable: &Path,
+) -> anyhow::Result<std::path::PathBuf> {
+    use anyhow::Context as _;
+    use std::hash::{Hash as _, Hasher as _};
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    executable.hash(&mut hasher);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _};
+
+        let uid = rustix::process::geteuid().as_raw();
+        let dir = base.join(format!("runner-{name}-{uid}-{:016x}", hasher.finish()));
+        match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
+            Err(error) if error.kind() != std::io::ErrorKind::AlreadyExists => {
+                return Err(error).with_context(|| format!("cannot create {}", dir.display()));
+            }
+            _ => {}
+        }
+        let meta = std::fs::symlink_metadata(&dir)
+            .with_context(|| format!("cannot inspect {}", dir.display()))?;
+        if !meta.file_type().is_dir() {
+            anyhow::bail!("{} is not a directory", dir.display());
+        }
+        if meta.uid() != uid {
+            anyhow::bail!(
+                "{} belongs to uid {}, not to this user",
+                dir.display(),
+                meta.uid()
+            );
+        }
+        if meta.mode() & 0o022 != 0 {
+            anyhow::bail!(
+                "{} is writable by group or others (mode {:o})",
+                dir.display(),
+                meta.mode() & 0o777
+            );
+        }
+        Ok(dir)
+    }
+    #[cfg(windows)]
+    {
+        let dir = base.join(format!("runner-{name}-{:016x}", hasher.finish()));
+        std::fs::create_dir_all(&dir)
+            .with_context(|| format!("cannot create {}", dir.display()))?;
+        Ok(dir)
+    }
 }
 
 fn set_task_stdio(
@@ -778,6 +831,59 @@ mod tests {
         let status = runner_core::execute::status(&plan, &mut command)
             .expect("shim should spawn via the child PATH");
         assert_eq!(status.code(), Some(42));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stand_in_link_dir_is_private_to_the_user() {
+        use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
+
+        use super::private_link_dir;
+
+        let base = TempDir::new("stand-in-private");
+        let executable = base.path().join("bun");
+
+        let dir = private_link_dir(base.path(), "node", &executable).expect("fresh dir");
+        let uid = rustix::process::geteuid().as_raw();
+        assert!(
+            dir.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(&format!("runner-node-{uid}-"))),
+            "{}",
+            dir.display()
+        );
+        let mode = fs::metadata(&dir).expect("dir exists").permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
+        assert_eq!(
+            private_link_dir(base.path(), "node", &executable).expect("own dir is reused"),
+            dir,
+        );
+
+        fs::remove_dir(&dir).expect("dir removed");
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&dir)
+            .expect("dir recreated");
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).expect("dir readable");
+        private_link_dir(base.path(), "node", &executable).expect("a readable dir is reused");
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o777)).expect("dir opened up");
+        let err = private_link_dir(base.path(), "node", &executable)
+            .expect_err("a writable dir must be refused");
+        assert!(
+            format!("{err:#}").contains("writable by group or others (mode 777)"),
+            "{err:#}"
+        );
+
+        fs::remove_dir(&dir).expect("dir removed");
+        let target = base.path().join("elsewhere");
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&target)
+            .expect("target created");
+        std::os::unix::fs::symlink(&target, &dir).expect("symlink planted");
+        let err = private_link_dir(base.path(), "node", &executable)
+            .expect_err("a symlinked dir must be refused");
+        assert!(format!("{err:#}").contains("is not a directory"), "{err:#}");
     }
 
     #[cfg(windows)]

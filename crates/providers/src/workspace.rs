@@ -79,6 +79,9 @@ fn expand(root: &Path, globs: &[String]) -> Result<Vec<PathBuf>, Warning> {
                 .map_err(|error| Warning::general(format!("workspace glob {glob}: {error}")))
         })
         .collect::<Result<_, _>>()?;
+    let base = root
+        .canonicalize()
+        .map_err(|error| Warning::general(format!("{}: {error}", root.display())))?;
     let escaped_root = glob::Pattern::escape(&root.to_string_lossy());
     let mut dirs: Vec<PathBuf> = Vec::new();
     for positive in positives {
@@ -99,7 +102,10 @@ fn expand(root: &Path, globs: &[String]) -> Result<Vec<PathBuf>, Warning> {
             let excluded = negatives
                 .iter()
                 .any(|negative| negative.matches_path_with(relative, MATCH_OPTIONS));
-            if path.is_dir() && !in_node_modules && !excluded && !dirs.contains(&path) {
+            let inside = path
+                .canonicalize()
+                .is_ok_and(|resolved| resolved.starts_with(&base));
+            if path.is_dir() && inside && !in_node_modules && !excluded && !dirs.contains(&path) {
                 dirs.push(path);
             }
         }

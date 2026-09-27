@@ -324,9 +324,12 @@ source has no present package manager to run it, resolution takes the first
 supporting one on `PATH` in `probe_priority` order. A provider is shaped for the op before its
 `before_plan` hook runs, so a hook can only refuse an op the provider could
 take. A test runner whose discovery finds nothing refuses as `NoTests`, and
-the next present runner in candidate order is planned instead. When no runner
-finds tests the first `NoTests` stops the cascade; only a project without a
-test runner falls through.
+the next present runner in candidate order is planned instead. A chosen
+runtime keeps its refusal. An explicitly chosen package manager keeps its
+refusal over the other runners of its ecosystem, and is `Invalid` when it has
+no evidence in scope; runners of other ecosystems are still planned. When
+no runner finds tests the first `NoTests` stops the cascade; only a project
+without a test runner falls through.
 
 ```rust
 pub struct InstallCap {
@@ -828,7 +831,8 @@ Rules that follow:
    `--allow-import` or `--allow-ffi`.
 7. **Symlinks do not escape.** Scope assignment canonicalises paths before
    comparing them to the root, so a task file symlinked in from outside is
-   `Scope::Root` only when it really resolves under the root.
+   `Scope::Root` only when it really resolves under the root. A workspace
+   member or a clean target that resolves outside the root is dropped.
 8. **Names are validated by shape.** `ExecCap::accepts` says whether a
    provider takes bare names, path-like names or versioned names. A name
    with a path separator never reaches `npx`, and a bare name never reaches

@@ -24,6 +24,7 @@ pub fn plan(
     frameworks: bool,
 ) -> Result<CleanPlan, Refusal> {
     let scope = crate::plan::scope_at(tree, &tree.cwd);
+    let base = tree.root.canonicalize().map_err(Refusal::from)?;
     let mut plan = CleanPlan {
         targets: Vec::new(),
         because: Vec::new(),
@@ -72,6 +73,13 @@ pub fn plan(
             let target = root.join(relative);
             match target.symlink_metadata() {
                 Ok(metadata) if metadata.is_dir() && !plan.targets.contains(&target) => {
+                    if !target
+                        .canonicalize()
+                        .map_err(Refusal::from)?
+                        .starts_with(&base)
+                    {
+                        continue;
+                    }
                     if present.because.is_empty() {
                         return Err(Refusal::Invalid("clean needs provider evidence".into()));
                     }

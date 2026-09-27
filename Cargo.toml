@@ -34,6 +34,7 @@ json5         = "1"
 lsp-server    = "0.10"
 lsp-types     = "0.97"
 regress       = "0.12"
+rustix        = { version = "1", default-features = false, features = ["process", "std"] }
 schemars      = "1.2"
 semver        = "1"
 serde         = { version = "1", features = ["derive"] }

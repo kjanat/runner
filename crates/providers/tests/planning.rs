@@ -1283,6 +1283,39 @@ fn clean_from_a_member_includes_the_root_and_that_member() {
 
 #[test]
 #[cfg(unix)]
+fn clean_skips_a_member_symlinked_outside_the_root() {
+    let fixture = Fixture::new();
+    let outside = tempfile::tempdir().unwrap();
+    let sentinel = outside.path().join("node_modules").join("SENTINEL");
+    std::fs::create_dir_all(sentinel.parent().unwrap()).unwrap();
+    std::fs::write(&sentinel, "").unwrap();
+    std::fs::create_dir_all(fixture.0.root.join("node_modules")).unwrap();
+    let member_dir = fixture.0.root.join("packages").join("evil");
+    std::fs::create_dir_all(member_dir.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(outside.path(), &member_dir).unwrap();
+    let member = Scope::Member {
+        name: "evil".into(),
+        dir: member_dir.clone(),
+    };
+    let tree = Tree {
+        cwd: member_dir,
+        root: fixture.0.root.clone(),
+        members: vec![member.clone()],
+    };
+    let mut local = fixture.present(ProviderId::Npm);
+    local.scope = member;
+    let project = Project {
+        present: vec![fixture.present(ProviderId::Npm), local],
+        ..Project::default()
+    };
+    let plan = runner_core::clean::plan(&tree, &project, &REGISTRY, false).unwrap();
+    assert_eq!(plan.targets, [fixture.0.root.join("node_modules")]);
+    runner_core::clean::execute(&plan).unwrap();
+    assert!(sentinel.is_file());
+}
+
+#[test]
+#[cfg(unix)]
 fn declared_health_checks_report_findings_and_query_failures() {
     use std::os::unix::fs::PermissionsExt;
     let fixture = Fixture::new();
@@ -1989,6 +2022,54 @@ fn a_chosen_package_manager_that_cannot_dispatch_the_source_is_refused() {
     );
 }
 
+#[test]
+fn an_invocation_package_manager_leaves_a_source_only_one_manager_runs() {
+    let fixture = Fixture::new();
+    let cargo_task = named_task(ProviderId::Cargo, "test");
+    let cargo_project = Project {
+        present: vec![
+            fixture.present(ProviderId::Npm),
+            fixture.present(ProviderId::Cargo),
+        ],
+        ..Project::default()
+    };
+    let with_npm = |from: runner_core::Layer| {
+        let mut policy = Policy::default();
+        policy.pm.0.insert(
+            runner_core::Ecosystem::Node,
+            runner_core::Choice {
+                id: ProviderId::Npm,
+                from,
+            },
+        );
+        runner_core::plan(
+            &fixture.0,
+            &cargo_project,
+            &policy,
+            &Op::Run {
+                task: &cargo_task,
+                args: &[],
+            },
+            &REGISTRY,
+        )
+    };
+    for layer in [runner_core::Layer::Cli, runner_core::Layer::Env] {
+        let plan = with_npm(layer.clone()).unwrap();
+        assert_eq!(
+            plan.provider,
+            Some(ProviderId::Cargo),
+            "one manager dispatches cargo aliases, so {layer:?} has no choice to make"
+        );
+    }
+    assert!(matches!(
+        with_npm(runner_core::Layer::ConfigFile("runner.toml".into())),
+        Err(Refusal::NoCapability {
+            provider: ProviderId::Npm,
+            ..
+        })
+    ));
+}
+
 /// Observe and resolve `fixture` under `policy`, the way the CLI does.
 fn resolved(fixture: &Fixture, policy: &Policy) -> Project {
     let evidence = runner_core::observe::observe(&fixture.0, &REGISTRY).unwrap();
@@ -2503,6 +2584,142 @@ fn node_test_discovery_refuses_jsx_and_tsx_files() {
 }
 
 #[test]
+fn an_explicit_package_manager_keeps_its_test_refusal() {
+    let fixture = Fixture::new();
+    std::fs::write(fixture.0.root.join("app.test.tsx"), "const view = <div />").unwrap();
+    let project = Project {
+        present: vec![
+            fixture.present(ProviderId::Npm),
+            fixture.present(ProviderId::Bun),
+        ],
+        ..Project::default()
+    };
+    let test = |policy: &Policy, project: &Project| {
+        runner_core::plan(
+            &fixture.0,
+            project,
+            policy,
+            &Op::Test { args: &[] },
+            &REGISTRY,
+        )
+    };
+    let choose = |id: ProviderId, from: runner_core::Layer| {
+        let mut policy = Policy::default();
+        policy.pm.0.insert(
+            runner_core::Ecosystem::Node,
+            runner_core::Choice { id, from },
+        );
+        policy
+    };
+    for layer in [
+        runner_core::Layer::Cli,
+        runner_core::Layer::Env,
+        runner_core::Layer::ConfigFile("runner.toml".into()),
+    ] {
+        let outcome = test(&choose(ProviderId::Npm, layer.clone()), &project);
+        assert!(
+            matches!(
+                outcome,
+                Err(Refusal::NoTests {
+                    provider: ProviderId::Npm,
+                    ..
+                })
+            ),
+            "{layer:?}: {outcome:?}"
+        );
+    }
+    let plan = test(&Policy::default(), &project).unwrap();
+    assert_eq!(words(&plan), ["bun", "test"]);
+    let detected = choose(
+        ProviderId::Npm,
+        runner_core::Layer::Lockfile("package-lock.json".into()),
+    );
+    assert_eq!(words(&test(&detected, &project).unwrap()), ["bun", "test"]);
+
+    let bun_only = Project {
+        present: vec![fixture.present(ProviderId::Bun)],
+        ..Project::default()
+    };
+    let outcome = test(&choose(ProviderId::Npm, runner_core::Layer::Cli), &bun_only);
+    assert!(
+        matches!(&outcome, Err(Refusal::Invalid(message)) if message == "no evidence for package manager npm"),
+        "{outcome:?}"
+    );
+
+    let composer = Project {
+        present: vec![
+            fixture.present(ProviderId::Npm),
+            fixture.present(ProviderId::Composer),
+        ],
+        ..Project::default()
+    };
+    let mut policy = Policy::default();
+    policy.pm.0.insert(
+        runner_core::Ecosystem::Php,
+        runner_core::Choice {
+            id: ProviderId::Composer,
+            from: runner_core::Layer::Cli,
+        },
+    );
+    let outcome = runner_core::dispatch(&cascade(&fixture, &composer, &policy), "test", &[]);
+    assert!(
+        matches!(
+            &outcome,
+            Err(Refusal::NoCapability {
+                provider: ProviderId::Composer,
+                op: "test",
+                chosen_by: Some(runner_core::Layer::Cli),
+            })
+        ),
+        "{outcome:?}"
+    );
+}
+
+#[test]
+fn an_explicit_package_manager_leaves_other_ecosystems_their_tests() {
+    let choose = |id: ProviderId, from: runner_core::Layer| {
+        let mut policy = Policy::default();
+        policy.pm.0.insert(
+            runner_core::Ecosystem::Node,
+            runner_core::Choice { id, from },
+        );
+        policy
+    };
+    let rust = Fixture::new();
+    std::fs::write(
+        rust.0.root.join("Cargo.toml"),
+        "[package]\nname = \"x\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    for present in [
+        vec![
+            rust.present(ProviderId::Npm),
+            rust.present(ProviderId::Cargo),
+        ],
+        vec![rust.present(ProviderId::Cargo)],
+    ] {
+        let project = Project {
+            present,
+            ..Project::default()
+        };
+        let plan = runner_core::plan(
+            &rust.0,
+            &project,
+            &choose(ProviderId::Npm, runner_core::Layer::Env),
+            &Op::Test { args: &[] },
+            &REGISTRY,
+        )
+        .unwrap();
+        assert_eq!(
+            words(&plan)[..2],
+            ["cargo", "test"],
+            "{:?}",
+            project.present
+        );
+    }
+}
+
+#[test]
 fn explicit_typescript_test_files_ask_node_to_strip_types() {
     let fixture = Fixture::new();
     let project = Project {
@@ -2749,6 +2966,58 @@ fn an_explicit_source_choice_rejects_a_task_another_source_defines() {
             .map(|task| task.source),
         Some(ProviderId::Just)
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn an_explicit_source_choice_runs_its_own_program() {
+    let fixture = Fixture::new();
+    let bin = fixture.0.root.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let mut present = Vec::new();
+    for (provider, program) in [(ProviderId::Cargo, "cargo"), (ProviderId::Turbo, "turbo")] {
+        executable(&bin.join(program));
+        let mut observed = fixture.present(provider);
+        observed.bin_dirs = vec![bin.clone()];
+        present.push(observed);
+    }
+    let project = Project {
+        present,
+        ..Project::default()
+    };
+    for (source, own, other) in [
+        (ProviderId::Cargo, "cargo", "turbo"),
+        (ProviderId::Turbo, "turbo", "cargo"),
+    ] {
+        let policy = Policy {
+            source: Some(runner_core::Choice {
+                id: source,
+                from: runner_core::Layer::Cli,
+            }),
+            ..Policy::default()
+        };
+        let cascade = cascade(&fixture, &project, &policy);
+        let Ok((rung, Dispatch::Plan(plan))) =
+            runner_core::dispatch(&cascade, own, &["--version".into()])
+        else {
+            panic!("{own} under its own source");
+        };
+        assert_eq!(rung.name, "host");
+        assert_eq!(
+            words(&plan),
+            [
+                bin.join(own).to_string_lossy().into_owned(),
+                "--version".into()
+            ]
+        );
+        for token in [other, "sh"] {
+            let outcome = runner_core::dispatch(&cascade, token, &[]);
+            assert!(
+                matches!(&outcome, Err(Refusal::NoSourceTask { source: chosen, name }) if *chosen == source && name == token),
+                "{own}/{token}: {outcome:?}"
+            );
+        }
+    }
 }
 
 #[test]

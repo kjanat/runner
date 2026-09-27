@@ -307,3 +307,29 @@ fn anchor_stops_at_the_boundary() {
         None
     );
 }
+
+#[test]
+#[cfg(unix)]
+fn members_symlinked_outside_the_root_are_not_members() {
+    let dir = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    write(
+        dir.path(),
+        "package.json",
+        r#"{ "workspaces": ["packages/*"] }"#,
+    );
+    write(
+        dir.path(),
+        "packages/web/package.json",
+        r#"{ "name": "web" }"#,
+    );
+    write(dir.path(), "shared/package.json", r#"{ "name": "shared" }"#);
+    write(outside.path(), "package.json", r#"{ "name": "evil" }"#);
+    std::os::unix::fs::symlink(outside.path(), dir.path().join("packages/evil")).unwrap();
+    std::os::unix::fs::symlink(dir.path().join("shared"), dir.path().join("packages/alias"))
+        .unwrap();
+    assert_eq!(
+        names(&found(dir.path())),
+        [("shared", "packages/alias"), ("web", "packages/web")]
+    );
+}

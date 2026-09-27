@@ -376,35 +376,22 @@ pub fn plan(
         refuse_both_chosen(policy, choice, op, registry)?;
     }
     if let Op::Run { task, .. } = op {
-        let dispatches = |provider: &Provider| {
-            provider
-                .caps
-                .run_task
-                .is_some_and(|cap| cap.sources.contains(&task.source))
-        };
-        let needs_manager = registry.of_kind(Kind::PACKAGE_MANAGER).any(dispatches);
-        for choice in policy.pm.0.values() {
-            let provider = registry.by_id(choice.id);
-            if dispatches(provider) && project.present_in(choice.id, &task.scope).is_none() {
-                return Err(Refusal::Invalid(format!(
-                    "no evidence for package manager {}",
-                    provider.label
-                )));
-            }
-            if needs_manager && !dispatches(provider) && choice.from.is_explicit() {
-                return Err(Refusal::NoCapability {
-                    provider: choice.id,
-                    op: op.name(),
-                    chosen_by: Some(choice.from.clone()),
-                });
-            }
-        }
+        refuse_unfit_managers(project, policy, task, op, registry)?;
     }
+    let mut held = absent_test_managers(tree, project, policy, op, registry);
     let mut last = None;
     for present in candidates(tree, project, policy, op, registry) {
-        match plan_with(tree, project, policy, present, op, registry) {
+        let ecosystem = registry.by_id(present.provider).ecosystem;
+        if held.iter().any(|(blocked, _)| *blocked == ecosystem) {
+            continue;
+        }
+        let chosen = chosen_test_pm(policy, op, present.provider);
+        let outcome = plan_with(tree, project, policy, present, op, registry)
+            .map_err(|refusal| chosen_by(refusal, chosen));
+        match outcome {
             Ok(made) => return Ok(under_runtime(made, policy, registry)),
             Err(refusal @ Refusal::Unsafe(_)) => return Err(refusal),
+            Err(refusal) if chosen.is_some() => held.push((ecosystem, refusal)),
             Err(refusal)
                 if matches!(op, Op::Test { .. })
                     && policy
@@ -423,6 +410,9 @@ pub fn plan(
             Err(refusal) => return Err(refusal),
         }
     }
+    if let Some((_, refusal)) = held.into_iter().next() {
+        return Err(refusal);
+    }
     Err(last.unwrap_or_else(|| Refusal::NoCapability {
         provider: project
             .present
@@ -431,6 +421,107 @@ pub fn plan(
         op: op.name(),
         chosen_by: None,
     }))
+}
+
+/// Refuse a package manager chosen for `task` that cannot dispatch its source.
+/// A `[tasks.<name>]` choice binds whenever a manager dispatches the source;
+/// `--pm` and `RUNNER_PM` bind only when several do.
+fn refuse_unfit_managers(
+    project: &Project,
+    policy: &Policy,
+    task: &Task,
+    op: &Op<'_>,
+    registry: &Registry,
+) -> Result<(), Refusal> {
+    let dispatches = |provider: &Provider| {
+        provider
+            .caps
+            .run_task
+            .is_some_and(|cap| cap.sources.contains(&task.source))
+    };
+    let managers = registry
+        .of_kind(Kind::PACKAGE_MANAGER)
+        .filter(|provider| dispatches(provider))
+        .count();
+    for choice in policy.pm.0.values() {
+        let provider = registry.by_id(choice.id);
+        if dispatches(provider) && project.present_in(choice.id, &task.scope).is_none() {
+            return Err(Refusal::Invalid(format!(
+                "no evidence for package manager {}",
+                provider.label
+            )));
+        }
+        let binds = match &choice.from {
+            Layer::ConfigFile(_) => managers > 0,
+            Layer::Cli | Layer::Env => managers > 1,
+            Layer::Manifest(_) | Layer::Lockfile(_) | Layer::Probe => false,
+        };
+        if binds && !dispatches(provider) {
+            return Err(Refusal::NoCapability {
+                provider: choice.id,
+                op: op.name(),
+                chosen_by: Some(choice.from.clone()),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Each explicitly chosen test manager with no evidence in scope, by the
+/// ecosystem whose other runners it holds back.
+fn absent_test_managers(
+    tree: &Tree,
+    project: &Project,
+    policy: &Policy,
+    op: &Op<'_>,
+    registry: &Registry,
+) -> Vec<(Ecosystem, Refusal)> {
+    policy
+        .pm
+        .0
+        .values()
+        .filter(|choice| {
+            chosen_test_pm(policy, op, choice.id).is_some()
+                && project.present_in(choice.id, &op_scope(tree, op)).is_none()
+        })
+        .map(|choice| {
+            let provider = registry.by_id(choice.id);
+            (
+                provider.ecosystem,
+                Refusal::Invalid(format!(
+                    "no evidence for package manager {}",
+                    provider.label
+                )),
+            )
+        })
+        .collect()
+}
+
+fn chosen_test_pm<'a>(policy: &'a Policy, op: &Op<'_>, id: ProviderId) -> Option<&'a Choice> {
+    policy
+        .pm
+        .0
+        .values()
+        .find(|choice| choice.id == id && choice.from.is_explicit())
+        .filter(|_| matches!(op, Op::Test { .. }))
+}
+
+fn chosen_by(refusal: Refusal, chosen: Option<&Choice>) -> Refusal {
+    match (refusal, chosen) {
+        (
+            Refusal::NoCapability {
+                provider,
+                op,
+                chosen_by: None,
+            },
+            Some(choice),
+        ) => Refusal::NoCapability {
+            provider,
+            op,
+            chosen_by: Some(choice.from.clone()),
+        },
+        (refusal, _) => refusal,
+    }
 }
 
 /// Whether `pm` runs its tasks on `runtime`, itself or with `runtime` standing
@@ -1629,7 +1720,9 @@ fn test_rung(
         cascade.registry,
     ) {
         Ok(made) => Ok(Some(dispatched(made))),
-        Err(Refusal::NoCapability { .. }) => Ok(None),
+        Err(Refusal::NoCapability {
+            chosen_by: None, ..
+        }) => Ok(None),
         Err(refusal) => Err(refusal),
     }
 }
@@ -1654,13 +1747,28 @@ fn host_rung(
         provider.program == Some(token) && provider.caps.run_default.is_some()
     });
     let Some(present) = root else {
-        if let Some(choice) = &cascade.policy.source {
+        let Some(choice) = &cascade.policy.source else {
+            return probe_with(token, &[]).map(found).transpose();
+        };
+        let own = cascade
+            .project
+            .present_in(choice.id, &scope)
+            .is_some_and(|chosen| {
+                cascade
+                    .registry
+                    .by_id(chosen.provider)
+                    .for_present(chosen)
+                    .program
+                    == Some(token)
+            });
+        if !own {
             return Err(Refusal::NoSourceTask {
                 source: choice.id,
                 name: token.to_owned(),
             });
         }
-        return probe_with(token, &[]).map(found).transpose();
+        let dirs = bin_dirs(cascade.tree, cascade.project, &scope, cascade.registry);
+        return probe_with(token, &dirs).map(found).transpose();
     };
     if let Some(choice) = &cascade.policy.source
         && choice.id != present.provider

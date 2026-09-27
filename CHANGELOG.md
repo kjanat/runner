@@ -324,6 +324,10 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Fixed
 
+- A workspace member symlinked to a directory outside the workspace root is
+  no member, and `clean` never removes a directory that resolves outside the
+  root.
+
 - `run test` with no `test` task tries the next present test runner when one
   finds no test files. A Go module with a `package.json` runs `go test ./...`
   instead of refusing for want of `*.test.js` files.
@@ -548,8 +552,10 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   the environment is a usage error.
 
 - Under a `--source` choice a bare name the source does not supply is refused
-  instead of running a program from `PATH`. File paths, builtins and the
-  chosen runner's own entry point still run.
+  instead of running a program from `PATH`. File paths, builtins, the
+  chosen runner's own entry point and the chosen source's own program still
+  run: `runner --source cargo run cargo --version` and `runner --source turbo
+  run turbo` find it in the project's bin dirs or on `PATH`.
 
 - `RUNNER_QUIET` and `-q` each expand at their own layer, so
   `RUNNER_QUIET=2 runner -q` still hides warnings and quiets the tool.
@@ -613,6 +619,18 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - Under `--source`, a task the chosen source lacks is refused as missing from
   that source even when another source, such as `turbo.json` or `deno.json`,
   cannot be read. The chosen source being unreadable still stops the run.
+
+- The directory holding a stand-in link, such as Bun linked as `node`, is
+  named by the user's uid and created with mode 0700. A directory at that path that is a symlink, belongs
+  to another user, or is writable by group or others is refused instead of
+  being put on the task's `PATH`.
+
+- `runner test` under `--pm`, `RUNNER_PM` or a `runner.toml` package manager
+  reports that manager's refusal instead of running another manager of its
+  ecosystem, so `--pm npm test` with only `.tsx` tests no longer runs `bun
+  test`. A chosen manager with no evidence in the project is refused. Other
+  ecosystems still run their own tests, so `RUNNER_PM=npm runner test` in a
+  Cargo project runs `cargo test`.
 
 ### Security
 
