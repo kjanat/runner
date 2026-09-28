@@ -63,7 +63,7 @@ jobs:
     needs: setup
     if: inputs.dry-run != true
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 15
     permissions: { contents: read, id-token: write, actions: read }
     environment: { name: crates-io, url: "https://crates.io/crates/${{ matrix.crate }}/${{ needs.setup.outputs.version }}" }
     strategy: { max-parallel: 1, fail-fast: true, matrix: { include: "${{ fromJSON(needs.setup.outputs.crates) }}" } }

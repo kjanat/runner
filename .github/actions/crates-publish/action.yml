@@ -29,7 +29,7 @@ runs:
         set -euo pipefail
         : "${PROOF_DIR:?}" "${CRATE:?}" "${VERSION:?}" "${RETRY_WAIT:?}"
         readonly report="${PROOF_DIR}/verification.json"
-        readonly max_retries=8
+        readonly max_retries=2
         # Index propagation of a just-published dependency is seconds, not minutes.
         readonly propagation_wait=30
 
