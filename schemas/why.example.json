@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "kind": "runner.why",
+  "root": "/path/to/project",
+  "query": "t",
+  "pm_resolution": null,
+  "output": {
+    "level": "off",
+    "progress": true,
+    "warnings": true,
+    "errors": true,
+    "groups": true,
+    "timing": true,
+    "summary": true,
+    "fatal_errors": true,
+    "tool": "normal",
+    "stdout": "inherit",
+    "stderr": "inherit"
+  },
+  "selected": {
+    "task": {
+      "name": "t",
+      "fqn": "root:cargo#t",
+      "provider": "cargo",
+      "kind": "cargo",
+      "source": "/path/to/project/.cargo/config.toml",
+      "source_pointer": "alias.t",
+      "description": null,
+      "aliases": [],
+      "definition": "test",
+      "resolved": "cargo t",
+      "cwd": "/path/to/project",
+      "dependencies": []
+    },
+    "match": {
+      "selector": "t",
+      "matched_by": "name",
+      "rank": {
+        "tier": 1,
+        "dispatcher": null,
+        "dispatch_order": null,
+        "priority": 6
+      },
+      "is_alias": true,
+      "passthrough_to": null
+    }
+  },
+  "candidates": [
+    {
+      "task": {
+        "name": "t",
+        "fqn": "root:cargo#t",
+        "provider": "cargo",
+        "kind": "cargo",
+        "source": "/path/to/project/.cargo/config.toml",
+        "source_pointer": "alias.t",
+        "description": null,
+        "aliases": [],
+        "definition": "test",
+        "resolved": "cargo t",
+        "cwd": "/path/to/project",
+        "dependencies": []
+      },
+      "match": {
+        "selector": "t",
+        "matched_by": "name",
+        "rank": {
+          "tier": 1,
+          "dispatcher": null,
+          "dispatch_order": null,
+          "priority": 6
+        },
+        "is_alias": true,
+        "passthrough_to": null
+      }
+    }
+  ],
+  "decision": {
+    "strategy": "single-candidate",
+    "reason": "exact task name matched one candidate",
+    "tried": [
+      "builtin",
+      "path",
+      "task"
+    ]
+  }
+}

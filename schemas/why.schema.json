@@ -1,0 +1,562 @@
+{
+  "$id": "https://kjanat.github.io/runner/schemas/why.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "JsRuntimeLabel": {
+      "type": "string",
+      "enum": [
+        "bun",
+        "deno",
+        "node"
+      ]
+    },
+    "PmResolution": {
+      "anyOf": [
+        {
+          "type": "object",
+          "required": [
+            "pm",
+            "via",
+            "warnings"
+          ],
+          "properties": {
+            "pm": {
+              "type": "string"
+            },
+            "via": {
+              "type": "string"
+            },
+            "warnings": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/WhyWarning"
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "error"
+          ],
+          "properties": {
+            "error": {
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    "ProviderLabel": {
+      "type": "string",
+      "enum": [
+        "turbo",
+        "node",
+        "make",
+        "just",
+        "task",
+        "deno",
+        "cargo",
+        "go",
+        "bacon",
+        "mise",
+        "python"
+      ]
+    },
+    "TaskSourceLabel": {
+      "type": "string",
+      "enum": [
+        "turbo",
+        "package.json",
+        "make",
+        "just",
+        "task",
+        "deno",
+        "cargo",
+        "go",
+        "bacon",
+        "mise",
+        "pyproject.toml"
+      ]
+    },
+    "WhyCandidate": {
+      "description": "One candidate: the task's identity plus how it matched the query.",
+      "type": "object",
+      "required": [
+        "match",
+        "task"
+      ],
+      "properties": {
+        "match": {
+          "$ref": "#/$defs/WhyMatch"
+        },
+        "task": {
+          "$ref": "#/$defs/WhyTask"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WhyDecision": {
+      "type": "object",
+      "required": [
+        "reason",
+        "strategy"
+      ],
+      "properties": {
+        "reason": {
+          "type": "string"
+        },
+        "strategy": {
+          "description": "Selection branch taken: `single-candidate`, `ranked`, `filtered`, `ambiguous`, `runner-root`, `not-found`, `refused`, or the resolving cascade rung.",
+          "type": "string"
+        },
+        "tried": {
+          "description": "Cascade rungs visited while planning this token.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "WhyMatch": {
+      "type": "object",
+      "required": [
+        "is_alias",
+        "matched_by",
+        "passthrough_to",
+        "rank",
+        "selector"
+      ],
+      "properties": {
+        "is_alias": {
+          "type": "boolean"
+        },
+        "matched_by": {
+          "description": "How the selector matched. `why` matches exact names only today.",
+          "type": "string"
+        },
+        "passthrough_to": {
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "rank": {
+          "description": "The key `runner run` orders candidates by, lowest first.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WhyRank"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "selector": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WhyOutput": {
+      "type": "object",
+      "required": [
+        "errors",
+        "fatal_errors",
+        "groups",
+        "level",
+        "progress",
+        "stderr",
+        "stdout",
+        "summary",
+        "timing",
+        "tool",
+        "warnings"
+      ],
+      "properties": {
+        "errors": {
+          "type": "boolean"
+        },
+        "fatal_errors": {
+          "type": "boolean"
+        },
+        "groups": {
+          "type": "boolean"
+        },
+        "level": {
+          "type": "string",
+          "enum": [
+            "off",
+            "quiet",
+            "very-quiet",
+            "silent",
+            "mute"
+          ]
+        },
+        "progress": {
+          "type": "boolean"
+        },
+        "stderr": {
+          "type": "string",
+          "enum": [
+            "inherit",
+            "discard"
+          ]
+        },
+        "stdout": {
+          "type": "string",
+          "enum": [
+            "inherit",
+            "discard"
+          ]
+        },
+        "summary": {
+          "type": "boolean"
+        },
+        "timing": {
+          "type": "boolean"
+        },
+        "tool": {
+          "type": "string",
+          "enum": [
+            "normal",
+            "quiet",
+            "reduced"
+          ]
+        },
+        "warnings": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WhyRank": {
+      "type": "object",
+      "required": [
+        "dispatch_order",
+        "dispatcher",
+        "priority",
+        "tier"
+      ],
+      "properties": {
+        "dispatch_order": {
+          "description": "The source's position in its dispatcher's sources.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "format": "uint"
+        },
+        "dispatcher": {
+          "description": "What dispatches the source: the chosen `runtime` or `package-manager`.",
+          "type": [
+            "null",
+            "string"
+          ],
+          "enum": [
+            "runtime",
+            "package-manager",
+            null
+          ]
+        },
+        "priority": {
+          "description": "The source's own task priority.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255,
+          "format": "uint8"
+        },
+        "tier": {
+          "description": "0 for sources a chosen package manager or runtime dispatches, 1 for the rest.",
+          "type": "integer",
+          "minimum": 0,
+          "format": "uint"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WhyRuntime": {
+      "description": "The forced JS runtime and whether it reaches the selected task, so a\nconsumer can reconcile `selected.task.resolved` against the PM block.",
+      "type": "object",
+      "required": [
+        "applied",
+        "runtime",
+        "via"
+      ],
+      "properties": {
+        "applied": {
+          "description": "Whether the selected task dispatches on this runtime. Null when no task was selected.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "note": {
+          "description": "Why the runtime did not apply, or what the runtime warns about for the selected task.",
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "runtime": {
+          "$ref": "#/$defs/JsRuntimeLabel",
+          "description": "Forced JS runtime label."
+        },
+        "via": {
+          "description": "Where the runtime override came from (CLI, env, or config).",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WhyTask": {
+      "type": "object",
+      "required": [
+        "aliases",
+        "cwd",
+        "definition",
+        "dependencies",
+        "description",
+        "fqn",
+        "kind",
+        "name",
+        "provider",
+        "resolved",
+        "source",
+        "source_pointer"
+      ],
+      "properties": {
+        "aliases": {
+          "description": "Names of sibling alias tasks that resolve to this task.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "definition": {
+          "description": "Raw definition target: alias expansion or tool-specific run target.",
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "dependencies": {
+          "description": "Tasks that run before this one, as the source declares them. Filled from `mise tasks --json`; empty for sources without dependency edges.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "depends_post": {
+          "description": "Tasks the source runs after this one.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "description": {
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "env": {
+          "description": "`KEY=VALUE` pairs the source sets for the task.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "file": {
+          "description": "Script file backing the task.",
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "fqn": {
+          "description": "Stable task identity: `<scope>:<kind>#<name>`. The `#` boundary keeps a task name containing `:` (e.g. `fmt:update`) unambiguous. Scope is `root` until workspace-member scoping lands.",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/TaskSourceLabel",
+          "description": "The task source's label, e.g. `cargo`."
+        },
+        "name": {
+          "type": "string"
+        },
+        "outputs": {
+          "description": "Output globs the source declares for up-to-date checks.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "provider": {
+          "$ref": "#/$defs/ProviderLabel",
+          "description": "Tool family that would execute the task (e.g. `cargo`, `just`, `node`)."
+        },
+        "resolved": {
+          "description": "Effective command preview. Null when it depends on a PM resolution that was not performed for this candidate.",
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "source": {
+          "description": "Config file the task was extracted from, when resolvable.",
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "source_pointer": {
+          "description": "Locator inside the source file: a key path for structured configs (`alias.t`, `scripts.test`), the target/recipe name for flat files.",
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "sources": {
+          "description": "Input globs the source declares for up-to-date checks.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "timeout": {
+          "description": "Timeout in the source's own duration syntax.",
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "tools": {
+          "description": "Tool version pins the task declares, as `tool@version`.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "usage": {
+          "description": "Argument and flag spec in the source's own language (mise: usage KDL).",
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "wait_for": {
+          "description": "Tasks this one waits for when they are already scheduled.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "WhyWarning": {
+      "type": "object",
+      "required": [
+        "detail",
+        "source"
+      ],
+      "properties": {
+        "detail": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "title": "runner why <task> --json",
+  "description": "JSON schema for `runner why <task> --json`: candidate `{task, match}` pairs plus the selection decision.",
+  "type": "object",
+  "required": [
+    "candidates",
+    "decision",
+    "kind",
+    "output",
+    "pm_resolution",
+    "query",
+    "root",
+    "schema_version",
+    "selected"
+  ],
+  "properties": {
+    "$schema": {
+      "description": "URI of the JSON Schema that describes this payload.",
+      "type": "string"
+    },
+    "candidates": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/WhyCandidate"
+      }
+    },
+    "decision": {
+      "$ref": "#/$defs/WhyDecision"
+    },
+    "kind": {
+      "description": "Payload discriminator; always \"runner.why\".",
+      "type": "string"
+    },
+    "output": {
+      "$ref": "#/$defs/WhyOutput"
+    },
+    "pm_resolution": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PmResolution"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "query": {
+      "description": "The task selector as the user typed it.",
+      "type": "string"
+    },
+    "root": {
+      "description": "Project root the query ran against.",
+      "type": "string"
+    },
+    "runtime": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WhyRuntime"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "schema_version": {
+      "description": "Schema contract version for this JSON payload.",
+      "type": "integer",
+      "const": 1,
+      "minimum": 0,
+      "format": "uint32"
+    },
+    "selected": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WhyCandidate"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,15 @@
+ok-one:
+    @echo "ok-one-ran"
+
+fail-mid:
+    @echo "fail-mid-ran"
+    @exit 7
+
+ok-two:
+    @echo "ok-two-ran"
+
+daemon:
+    @sh -c 'sleep 30 & exit 0'
+
+slow:
+    @sleep 5

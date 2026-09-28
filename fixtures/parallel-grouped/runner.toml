@@ -1,0 +1,2 @@
+[output.parallel]
+buffer = true

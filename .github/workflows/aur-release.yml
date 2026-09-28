@@ -1,27 +1,23 @@
+---
 name: aur-release
-run-name: >-
-  ${{ format('aur publish {0}', case(github.event_name == 'release',
-                                     github.event.release.tag_name,
-                                     inputs.tag)) }}
+run-name: ${{ format('aur {0} {1}', case(github.event_name == 'workflow_dispatch' && inputs.dry-run, 'dry-run', 'publish'), case(github.event_name == 'release', github.event.release.tag_name, inputs.tag)) }}
 
 on:
+  workflow_call: { inputs: { tag: { required: true, type: string } } }
   release: { types: [published] }
   workflow_dispatch:
     inputs:
-      tag:
-        description: Release tag to publish (e.g. v0.12.0)
-        required: true
-        type: string
-      dry-run:
-        description: Prepare + validate PKGBUILDs but do not push to AUR
-        required: true
-        default: false
-        type: boolean
+      tag: { description: Release tag to publish (e.g. v0.12.1), required: true, type: string }
+      dry-run: { description: Prepare + validate PKGBUILDs but do not push to AUR, required: true, default: false, type: boolean }
+
+permissions: {}
 
 jobs:
-  publish:
-    name: publish ${{ matrix.pkgname }}
+  aur:
+    name: ${{ format('{0} {1}', case(github.event_name == 'workflow_dispatch' && inputs.dry-run, 'dry-run', 'publish'), matrix.pkgname) }}
+    if: github.repository == 'kjanat/runner'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     # Serialize per-pkg so dispatch + release-published can't race the AUR push.
     concurrency: { group: "aur-publish-${{ matrix.pkgname }}", cancel-in-progress: false }
     strategy: { fail-fast: false, matrix: { pkgname: [runner-run, runner-run-bin] } }
@@ -32,22 +28,22 @@ jobs:
       RELEASE_TAG: ${{ case(github.event_name == 'release', github.event.release.tag_name, inputs.tag) }}
       DRY_RUN: ${{ inputs.dry-run || 'false' }}
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@v7
         with: { persist-credentials: false }
 
       - name: prepare PKGBUILD
+        env: { PKG: "${{ matrix.pkgname }}" }
         run: |
           set -euo pipefail
           version="${RELEASE_TAG#v}"
-          bash "${GITHUB_WORKSPACE}/.github/scripts/publish/aur-prepare.sh" \
-            "${{ matrix.pkgname }}" "${version}"
+          bash .github/scripts/aur.sh prepare "${PKG}" "${version}"
 
-      - name: publish to AUR
+      - name: push to AUR
         if: env.DRY_RUN != 'true'
-        uses: KSXGitHub/github-actions-deploy-aur@da03e160361ce01bf087e790b6ffd196d7dccff7 # v4.1.3
+        uses: KSXGitHub/github-actions-deploy-aur@v4.2.0
         with:
           pkgname: ${{ matrix.pkgname }}
-          pkgbuild: aur/${{ matrix.pkgname }}/PKGBUILD
+          pkgbuild: packaging/aur/${{ matrix.pkgname }}/PKGBUILD
           commit_username: Kaj Kowalski
           commit_email: info@kajkowalski.nl
           ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}

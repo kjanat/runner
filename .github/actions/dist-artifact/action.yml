@@ -1,0 +1,27 @@
+name: dist artifact
+description: >-
+  Download the tarred npm dist artifact from a release.yml run and extract it to packaging/npm/dist/.
+  The artifact is a tarball because the zip-based artifact store drops unix file modes;
+  extraction restores the executable bits.
+
+inputs:
+  run-id:
+    description: release.yml run ID that produced the `dist` artifact
+    required: true
+  token:
+    description: token with `actions:read` on this repo
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: validate inputs
+      env: { RUN_ID: "${{ inputs.run-id }}" }
+      run: if [[ -z "${RUN_ID}" ]]; then echo '::error title=Missing run-id::run-id is required to download the dist artifact' && exit 1; fi
+      shell: bash
+
+    - uses: actions/download-artifact@v8
+      with: { name: dist, path: packaging/npm/, run-id: "${{ inputs.run-id }}", github-token: "${{ inputs.token }}" }
+
+    - run: tar -xf packaging/npm/dist.tar -C packaging/npm && rm packaging/npm/dist.tar
+      shell: bash

@@ -1,0 +1,168 @@
+//! A warning belongs to a project, not to a process.
+//!
+//! `"fmt": "runner run lint:fix fmt:dprint"` is an ordinary shape, and it means
+//! a single `runner fmt` becomes two runner processes over one project. Both
+//! used to print the same detection warnings.
+
+mod support;
+
+use std::path::PathBuf;
+use std::process::Command;
+
+fn runner_binary() -> PathBuf {
+    PathBuf::from(env!("CARGO_BIN_EXE_runner"))
+}
+
+fn just_available() -> bool {
+    Command::new("just")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success())
+}
+
+/// A project whose `runner.toml` carries an unknown key (a warning every
+/// command prints) and whose `outer` task invokes `runner` again.
+///
+/// `tag` keeps each test on its own directory. These run on parallel threads
+/// and every one of them deletes its project when it is done, so a shared path
+/// means one test can delete the justfile another is still dispatching
+/// through — which surfaces as an `exec` fallback and a bare `ENOENT`.
+fn nesting_project(tag: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("runner-nested-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create project dir");
+    std::fs::write(dir.join("runner.toml"), "[bogus]\nkey = 1\n").expect("runner.toml");
+    std::fs::write(
+        dir.join("justfile"),
+        "outer:\n\t@runner run inner\n\ninner:\n\t@echo inner-ran\n",
+    )
+    .expect("justfile");
+    dir
+}
+
+#[test]
+fn a_nested_runner_does_not_repeat_the_warnings_its_parent_printed() {
+    if !just_available() {
+        eprintln!("skipping: `just` not on PATH");
+        return;
+    }
+    let dir = nesting_project("same-root");
+    let bin_dir = runner_binary()
+        .parent()
+        .expect("binary lives in a directory")
+        .to_path_buf();
+    let mut paths = vec![bin_dir];
+    if let Some(path) = std::env::var_os("PATH") {
+        paths.extend(std::env::split_paths(&path));
+    }
+    let path = std::env::join_paths(paths).expect("test PATH entries are valid");
+
+    let output = support::command(runner_binary())
+        .arg("run")
+        .arg("outer")
+        .current_dir(&dir)
+        .env("PATH", path)
+        .env_remove("RUNNER_WARNED_ROOT")
+        .env_remove("RUNNER_WARNINGS")
+        .output()
+        .expect("run runner");
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(output.status.success(), "run failed: {stderr}");
+    assert!(
+        stdout.contains("inner-ran"),
+        "the nested runner must still run the task: {stdout}",
+    );
+    assert_eq!(
+        stderr.matches("unknown key").count(),
+        1,
+        "the same warning, once per project, not once per process: {stderr}",
+    );
+}
+
+#[test]
+fn a_nested_runner_over_a_different_root_still_warns() {
+    // The marker is keyed on the root: a runner pointed somewhere else has its
+    // own detection to report, and silence there would be a bug of its own.
+    let dir = nesting_project("other-root");
+    let elsewhere =
+        std::env::temp_dir().join(format!("runner-nested-other-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&elsewhere);
+    std::fs::create_dir_all(&elsewhere).expect("create other dir");
+    std::fs::write(elsewhere.join("runner.toml"), "[nonsense]\nkey = 1\n").expect("runner.toml");
+
+    let output = support::command(runner_binary())
+        .arg("list")
+        .current_dir(&elsewhere)
+        .env("RUNNER_WARNED_ROOT", &dir)
+        .env_remove("RUNNER_WARNINGS")
+        .output()
+        .expect("run runner");
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&elsewhere);
+
+    assert_eq!(
+        stderr.matches("unknown key").count(),
+        1,
+        "a marker for another project must not silence this one: {stderr}",
+    );
+}
+
+fn npm_available() -> bool {
+    Command::new("npm")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success())
+}
+
+#[test]
+fn a_nested_runner_in_a_workspace_member_does_not_repeat_root_warnings() {
+    if !npm_available() {
+        eprintln!("skipping: `npm` not on PATH");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("runner-nested-member-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let member = dir.join("packages/a");
+    std::fs::create_dir_all(&member).expect("create member dir");
+    std::fs::write(dir.join("runner.toml"), "[bogus]\nkey = 1\n").expect("runner.toml");
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"name":"root","private":true,"workspaces":["packages/*"]}"#,
+    )
+    .expect("root package.json");
+    std::fs::write(
+        member.join("package.json"),
+        r#"{"name":"a","scripts":{"outer":"runner run inner","inner":"echo inner-ran"}}"#,
+    )
+    .expect("member package.json");
+    let bin_dir = runner_binary()
+        .parent()
+        .expect("binary lives in a directory")
+        .to_path_buf();
+    let mut paths = vec![bin_dir];
+    if let Some(path) = std::env::var_os("PATH") {
+        paths.extend(std::env::split_paths(&path));
+    }
+    let path = std::env::join_paths(paths).expect("test PATH entries are valid");
+
+    let output = support::command(runner_binary())
+        .arg("run")
+        .arg("outer")
+        .current_dir(&member)
+        .env("PATH", path)
+        .env_remove("RUNNER_WARNED_ROOT")
+        .env_remove("RUNNER_WARNINGS")
+        .output()
+        .expect("run runner");
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(output.status.success(), "run failed: {stderr}");
+    assert!(stdout.contains("inner-ran"), "{stdout}");
+    assert_eq!(stderr.matches("unknown key").count(), 1, "{stderr}");
+}

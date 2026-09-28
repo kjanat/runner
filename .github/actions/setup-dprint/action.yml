@@ -1,0 +1,3 @@
+name: Setup Dprint
+description: Setup Dprint for formatting code and caching compiled wasm
+runs: { using: "composite", steps: [{ uses: kjanat/dprint-check@v3, with: { install-only: true } }] }

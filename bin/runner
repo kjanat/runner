@@ -1,23 +1,50 @@
 #!/usr/bin/env bash
-SOURCE_PATH="$0"
-while [[ -L "${SOURCE_PATH}" ]]; do
-	# shellcheck disable=SC1007
-	SOURCE_DIR="$(CDPATH= cd -- "$(dirname -- "${SOURCE_PATH}")" && pwd)"
-	LINK_TARGET="$(readlink "${SOURCE_PATH}")"
-	case "${LINK_TARGET}" in
-		/*) SOURCE_PATH="${LINK_TARGET}" ;;
-		*) SOURCE_PATH="${SOURCE_DIR}/${LINK_TARGET}" ;;
+set -euo pipefail
+
+invoked_name="$(basename -- "$0")"
+
+case "${invoked_name}" in
+	run | runner) ;;
+	*)
+		printf 'error: unsupported launcher name: %s\n' "${invoked_name}" >&2
+		exit 1
+		;;
+esac
+
+source_path="${BASH_SOURCE[0]}"
+
+while [[ -L "${source_path}" ]]; do
+	source_dir="$(
+		unset CDPATH
+		cd -- "$(dirname -- "${source_path}")"
+		pwd -P
+	)"
+
+	link_target="$(readlink -- "${source_path}")"
+
+	case "${link_target}" in
+		/*) source_path="${link_target}" ;;
+		*) source_path="${source_dir}/${link_target}" ;;
 	esac
 done
-# shellcheck disable=SC1007
-SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${SOURCE_PATH}")" && pwd)"
-MANIFEST="${SCRIPT_DIR}/../Cargo.toml"
-[[ -f "${MANIFEST}" ]] || {
-	printf 'error: %s not found\n' "${MANIFEST}" >&2
+
+script_dir="$(
+	unset CDPATH
+	cd -- "$(dirname -- "${source_path}")"
+	pwd -P
+)"
+
+manifest="${script_dir}/../crates/cli/Cargo.toml"
+target_dir="${script_dir}/../target/runner-dev"
+
+[[ -f "${manifest}" ]] || {
+	printf 'error: %s not found\n' "${manifest}" >&2
 	exit 1
 }
 
-exec env CARGO_TERM_QUIET=true \
-	cargo run --release --locked \
-	--manifest-path="${MANIFEST}" \
+exec cargo run --locked --quiet \
+	--bin "${invoked_name}" \
+	--features=run,man,lsp \
+	--manifest-path="${manifest}" \
+	--target-dir="${target_dir}" \
 	-- "$@"
