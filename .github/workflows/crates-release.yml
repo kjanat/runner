@@ -8,69 +8,94 @@ on:
     inputs:
       tag: { description: Release tag to publish (e.g. vX.Y.Z), required: true, type: string }
       run-id: { description: release.yml run ID with a man-pages artifact; empty rebuilds them, required: false, default: "", type: string }
-      dry-run: { description: Dry run only (no upload to crates.io), required: false, default: false, type: boolean }
-
-env:
-  RELEASE_TAG: ${{ inputs.tag }}
-  INPUT_DRY_RUN: ${{ inputs.dry-run || 'false' }}
-  CARGO_TERM_COLOR: always
+      dry-run: { description: Verify packages without uploading, required: false, default: false, type: boolean }
 
 permissions: {}
 
+concurrency: { group: "crates-release-${{ inputs.tag }}", cancel-in-progress: false }
+
+env:
+  RELEASE_TAG: ${{ inputs.tag }}
+  RUN_ID: ${{ inputs.run-id }}
+  MAN_DIR: source/crates/cli/man
+  PROOF_DIR: ${{ github.workspace }}/verified-crates
+  CARGO_TERM_COLOR: always
+
 jobs:
-  publish:
-    name: publish to crates.io
+  setup:
+    name: verify packaged crates
     if: github.repository == 'kjanat/runner'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    permissions: { contents: read, id-token: write, actions: read }
-    environment: { name: crates-io, url: "${{ steps.verify.outputs.url }}" }
-    env: { HAS_CARGO_REGISTRY_TOKEN: "${{ case(secrets.CARGO_REGISTRY_TOKEN != '', 'true', 'false') }}" }
+    timeout-minutes: 45
+    permissions: { contents: read, actions: read }
+    outputs:
+      version: ${{ steps.packages.outputs.version }}
+      crates: ${{ steps.packages.outputs.crates }}
+      artifact_id: ${{ steps.artifact.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@v7
-        with: { ref: "refs/tags/${{ env.RELEASE_TAG }}", persist-credentials: false }
-      - uses: dtolnay/rust-toolchain@stable
+        with: { ref: "refs/tags/${{ env.RELEASE_TAG }}", persist-credentials: false, path: source }
       - uses: Swatinem/rust-cache@v2
-      - name: verify tag matches Cargo.toml version
-        shell: "bash -euxo pipefail {0}"
-        id: verify
-        run: |
-          tag_version="${RELEASE_TAG#v}"
-          metadata=$(cargo metadata --no-deps --format-version 1)
-          fields=$(jq -er '.workspace_default_members[0] as $id | .packages[] | select(.id == $id) | "\(.name) \(.version) \(.manifest_path)"' <<<"${metadata}")
-          read -r name manifest_version manifest_path <<<"${fields}"
-          manifest_path="${manifest_path#"${GITHUB_WORKSPACE}/"}"
-          if [[ "${tag_version}" != "${manifest_version}" ]]; then
-            echo "::error file=${manifest_path}::version does not match release tag"
-            echo "error: tag ${RELEASE_TAG} (${tag_version}) does not match ${manifest_path} version ${manifest_version}" >&2
-            exit 1
-          fi
-          echo "ok: tag ${RELEASE_TAG} matches ${manifest_path} version ${manifest_version}"
-          echo "url=https://crates.io/crates/${name}/${manifest_version}" >> "${GITHUB_OUTPUT}"
-          echo "man_dir=$(dirname "${manifest_path}")/man"                >> "${GITHUB_ENV}"
-
+        with: { workspaces: source }
       - name: download man pages
-        if: inputs.run-id != ''
+        if: env.RUN_ID != ''
         uses: actions/download-artifact@v8
-        with:
-          name: man-pages
-          path: ${{ env.man_dir }}
-          run-id: ${{ inputs.run-id }}
-          github-token: ${{ github.token }}
-
+        with: { name: man-pages, path: "${{ env.MAN_DIR }}", run-id: "${{ env.RUN_ID }}", github-token: "${{ github.token }}" }
       - name: build man pages
-        if: inputs.run-id == ''
-        run: cargo man --output "${man_dir}"
+        if: env.RUN_ID == ''
+        working-directory: source
+        run: cargo man --output "${GITHUB_WORKSPACE}/${MAN_DIR}"
+      - name: build every packaged crate without uploading
+        id: packages
+        uses: $/.github/actions/crates-verify
+        with: { source-dir: source, proof-dir: "${{ env.PROOF_DIR }}", tag: "${{ env.RELEASE_TAG }}", helper-sha: "${{ job.workflow_sha }}" }
+      - name: retain verified archives and report
+        id: artifact
+        uses: actions/upload-artifact@v7
+        with: {
+          name: "verified-crates-${{ github.run_id }}-${{ github.run_attempt }}",
+          path: "${{ env.PROOF_DIR }}",
+          retention-days: 14,
+          if-no-files-found: error,
+        }
 
-      - run: cargo dirtypub --dry-run
-
+  publish:
+    name: publish ${{ matrix.crate }}
+    needs: setup
+    if: inputs.dry-run != true
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions: { contents: read, id-token: write, actions: read }
+    environment: { name: crates-io, url: "https://crates.io/crates/${{ matrix.crate }}/${{ needs.setup.outputs.version }}" }
+    strategy: { max-parallel: 1, fail-fast: true, matrix: { include: "${{ fromJSON(needs.setup.outputs.crates) }}" } }
+    steps:
+      - uses: actions/checkout@v7
+        with: { ref: "refs/tags/${{ env.RELEASE_TAG }}", persist-credentials: false, path: source }
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: source }
+      - name: download this run's verified packages
+        uses: actions/download-artifact@v8
+        with: { artifact-ids: "${{ needs.setup.outputs.artifact_id }}", path: "${{ env.PROOF_DIR }}", merge-multiple: true }
+      - name: download man pages
+        if: matrix.crate == 'runner-run' && env.RUN_ID != ''
+        uses: actions/download-artifact@v8
+        with: { name: man-pages, path: "${{ env.MAN_DIR }}", run-id: "${{ env.RUN_ID }}", github-token: "${{ github.token }}" }
+      - name: build man pages
+        if: matrix.crate == 'runner-run' && env.RUN_ID == ''
+        working-directory: source
+        run: cargo man --output "${GITHUB_WORKSPACE}/${MAN_DIR}"
       - name: mint crates.io token (trusted publishing)
-        uses: rust-lang/crates-io-auth-action@v1
-        if: env.INPUT_DRY_RUN != 'true'
-        continue-on-error: ${{ env.HAS_CARGO_REGISTRY_TOKEN == 'true' }}
         id: auth
-
+        continue-on-error: true
+        uses: rust-lang/crates-io-auth-action@v1
       - name: cargo publish
-        if: env.INPUT_DRY_RUN != 'true'
-        env: { CARGO_REGISTRY_TOKEN: "${{ secrets.CARGO_REGISTRY_TOKEN || steps.auth.outputs.token }}" }
-        run: cargo dirtypub
+        uses: $/.github/actions/crates-publish
+        with:
+          crate: ${{ matrix.crate }}
+          version: ${{ needs.setup.outputs.version }}
+          token: ${{ steps.auth.outputs.token }}
+          bootstrap-token: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          source-dir: source
+          proof-dir: ${{ env.PROOF_DIR }}
+          tag: ${{ env.RELEASE_TAG }}
+          helper-sha: ${{ job.workflow_sha }}

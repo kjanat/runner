@@ -1,0 +1,49 @@
+name: crates publish
+description: >-
+  Publish one workspace crate to crates.io, resumably: an already-published
+  version is skipped via the sparse index, and 429 rate limits — crates.io
+  refills the new-crate-name allowance roughly once per ten minutes — are
+  absorbed by waiting and retrying instead of failing the release.
+
+inputs:
+  source-dir:
+    description: directory holding the checked-out source to operate on
+    required: false
+    default: "."
+  crate:
+    description: crate to publish
+    required: true
+  version:
+    description: the version being published (tag without the v prefix)
+    required: true
+  proof-dir: { description: Verified package archives and report from setup, required: true }
+  tag: { description: Release tag bound to the verification report, required: true }
+  helper-sha: { description: Helper commit bound to the verification report, required: true }
+  token:
+    description: OIDC-minted crates.io token, used for a crate crates.io already has
+    required: false
+    default: ""
+  bootstrap-token:
+    description: crates.io API token, used only for a crate crates.io does not have yet
+    required: false
+    default: ""
+  retry-wait:
+    description: seconds to wait after a 429 before retrying
+    required: false
+    default: "630"
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        SOURCE_DIR: ${{ inputs.source-dir }}
+        MINTED_TOKEN: ${{ inputs.token }}
+        BOOTSTRAP_TOKEN: ${{ inputs.bootstrap-token }}
+        CRATE: ${{ inputs.crate }}
+        VERSION: ${{ inputs.version }}
+        PROOF_DIR: ${{ inputs.proof-dir }}
+        RELEASE_TAG: ${{ inputs.tag }}
+        HELPER_SHA: ${{ inputs.helper-sha }}
+        RETRY_WAIT: ${{ inputs.retry-wait }}
+      run: bash "${GITHUB_ACTION_PATH}/run.sh"
