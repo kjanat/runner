@@ -1,0 +1,597 @@
+//! Line-prefix multiplexer for parallel chain output. Captures each
+//! task's stdout/stderr, prefixes lines with `[<task-name>]`, and
+//! writes to the parent terminal. Color and prefix-padding are derived
+//! from the set of task names supplied up front.
+
+use std::fs::{File, OpenOptions};
+use std::io::{self, BufRead, BufReader, Read, Write};
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::thread::JoinHandle;
+
+use colored::{Color, Colorize};
+
+static BUFFER_SINK_ID: AtomicU64 = AtomicU64::new(0);
+
+const STREAM_STDOUT: u8 = 0;
+const STREAM_STDERR: u8 = 1;
+
+/// Synchronous, thread-safe destination for prefixed chain output. Each
+/// `emit` call writes a single line and releases the underlying lock
+/// before returning, so `eprintln!` / `println!` from the main thread
+/// can interleave with reader threads without the deadlock the old
+/// mpsc-plus-dedicated-writer design suffered.
+pub(crate) trait LineSink: Send + Sync {
+    /// Write `line` to the appropriate stream, prefixed with `prefix`.
+    /// Implementations must acquire whatever lock guards the underlying
+    /// stream *per call* and release it before returning.
+    ///
+    /// # Errors
+    /// Returns the failed write.
+    fn emit(&self, prefix: &str, is_stderr: bool, line: &str) -> io::Result<()>;
+}
+
+/// Production sink. Locks `std::io::stdout` / `std::io::stderr` per
+/// line. Zero-sized; share via `Arc::new(StdioSink)`.
+pub(crate) struct StdioSink;
+
+impl LineSink for StdioSink {
+    fn emit(&self, prefix: &str, is_stderr: bool, line: &str) -> io::Result<()> {
+        let write = |h: &mut dyn Write| {
+            if prefix.is_empty() {
+                writeln!(h, "{line}")
+            } else {
+                writeln!(h, "{prefix} {line}")
+            }?;
+            h.flush()
+        };
+        if is_stderr {
+            write(&mut io::stderr().lock())
+        } else {
+            write(&mut io::stdout().lock())
+        }
+    }
+}
+
+/// Stream-selective wrapper. Suppressed pipes are still drained by reader
+/// threads, preventing child deadlocks while discarding their bytes.
+pub(crate) struct SelectiveSink {
+    inner: Arc<dyn LineSink>,
+    stdout: bool,
+    stderr: bool,
+}
+
+impl SelectiveSink {
+    pub(crate) const fn new(inner: Arc<dyn LineSink>, stdout: bool, stderr: bool) -> Self {
+        Self {
+            inner,
+            stdout,
+            stderr,
+        }
+    }
+}
+
+impl LineSink for SelectiveSink {
+    fn emit(&self, prefix: &str, is_stderr: bool, line: &str) -> io::Result<()> {
+        if (is_stderr && self.stderr) || (!is_stderr && self.stdout) {
+            self.inner.emit(prefix, is_stderr, line)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// Records whether any line written through it failed to reach its stream.
+pub(crate) struct Delivery {
+    inner: Arc<dyn LineSink>,
+    failed: AtomicBool,
+}
+
+impl Delivery {
+    pub(crate) fn new(inner: Arc<dyn LineSink>) -> Self {
+        Self {
+            inner,
+            failed: AtomicBool::new(false),
+        }
+    }
+
+    /// Whether a write failed.
+    pub(crate) fn failed(&self) -> bool {
+        self.failed.load(Ordering::SeqCst)
+    }
+}
+
+impl LineSink for Delivery {
+    fn emit(&self, prefix: &str, is_stderr: bool, line: &str) -> io::Result<()> {
+        let written = self.inner.emit(prefix, is_stderr, line);
+        if written.is_err() {
+            self.failed.store(true, Ordering::SeqCst);
+        }
+        written
+    }
+}
+
+/// Spooling sink for grouped parallel output. Reader threads append records to
+/// a temp file instead of writing live; the caller replays the file once the
+/// task finishes. Each record keeps stdout/stderr identity, so grouped mode
+/// preserves stream semantics while avoiding unbounded in-memory buffers.
+pub(crate) struct BufferSink {
+    file: std::sync::Mutex<File>,
+    path: PathBuf,
+    closed: AtomicBool,
+}
+
+impl BufferSink {
+    pub(crate) fn new() -> io::Result<Self> {
+        let dir = std::env::temp_dir();
+        for _ in 0..100 {
+            let id = BUFFER_SINK_ID.fetch_add(1, Ordering::Relaxed);
+            let path = dir.join(format!(
+                "runner-grouped-output-{}-{id}.tmp",
+                std::process::id()
+            ));
+            match OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(file) => {
+                    return Ok(Self {
+                        file: std::sync::Mutex::new(file),
+                        path,
+                        closed: AtomicBool::new(false),
+                    });
+                }
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(e) => return Err(e),
+            }
+        }
+
+        Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "failed to create unique runner output buffer",
+        ))
+    }
+
+    /// Stop accepting late records. Used before replay when descendant
+    /// processes keep a pipe open after the direct task process has exited.
+    pub(crate) fn close(&self) {
+        self.closed.store(true, Ordering::SeqCst);
+    }
+
+    fn file(&self) -> io::Result<std::sync::MutexGuard<'_, File>> {
+        self.file
+            .lock()
+            .map_err(|_| io::Error::other("buffer sink lock poisoned"))
+    }
+
+    /// Replay buffered records to their original streams.
+    ///
+    /// When `neutralize` is set (grouped replay under GitHub Actions), a child
+    /// line that is exactly a `::group::<title>` or `::endgroup::` workflow
+    /// command at column 0 is rewritten so it can't nest inside, or
+    /// prematurely close, runner's own per-task group: the group title is
+    /// surfaced as plain text and the endgroup is dropped. All other lines,
+    /// including `::warning::`/`::error::`/`::notice::` annotations, replay
+    /// verbatim.
+    pub(crate) fn replay_to(
+        &self,
+        stdout: &mut dyn Write,
+        stderr: &mut dyn Write,
+        neutralize: bool,
+    ) -> io::Result<()> {
+        self.close();
+        {
+            let mut file = self.file()?;
+            file.flush()?;
+        }
+        let mut file = File::open(&self.path)?;
+
+        // Tokens from child `::stop-commands::<token>` directives whose paired
+        // `::<token>::` resume should also be dropped (see the neutralize block).
+        let mut stopped_tokens: Vec<Vec<u8>> = Vec::new();
+        let stop_commands = actions_rs::WorkflowCommand::new("stop-commands").to_string();
+        let group = actions_rs::WorkflowCommand::new("group").to_string();
+        let endgroup = actions_rs::WorkflowCommand::new("endgroup").to_string();
+        let resume = actions_rs::WorkflowCommand::new("token").to_string();
+        let (open, close) = resume.split_once("token").unwrap_or_default();
+
+        loop {
+            let mut stream = [0_u8; 1];
+            match file.read_exact(&mut stream) {
+                Ok(()) => {}
+                Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => break,
+                Err(e) => return Err(e),
+            }
+
+            let mut len = [0_u8; 8];
+            file.read_exact(&mut len)?;
+            let len = usize::try_from(u64::from_le_bytes(len)).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidData, "buffer record too large")
+            })?;
+            let mut bytes = vec![0_u8; len];
+            file.read_exact(&mut bytes)?;
+
+            let out: &mut dyn Write = match stream[0] {
+                STREAM_STDOUT => &mut *stdout,
+                STREAM_STDERR => &mut *stderr,
+                _ => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "invalid buffer stream marker",
+                    ));
+                }
+            };
+
+            // `bytes` is one line including its trailing `\n` (the buffer sink
+            // always appends one). Workflow commands are only honoured by
+            // Actions at column 0, so an exact prefix match on the newline-free
+            // line is what GitHub would actually interpret.
+            if neutralize {
+                let line = bytes.strip_suffix(b"\n").unwrap_or(&bytes);
+
+                // `::stop-commands::<token>` halts ALL workflow-command
+                // processing until a matching `::<token>::`. Left in, a child
+                // could swallow our own `::endgroup::` (the group would never
+                // close) and every later annotation. Drop the directive and
+                // remember the token so its paired resume is dropped too; an
+                // unpaired resume falls through as a harmless unknown command.
+                if let Some(token) = line.strip_prefix(stop_commands.as_bytes()) {
+                    if !token.is_empty() {
+                        stopped_tokens.push(token.to_vec());
+                    }
+                    continue;
+                }
+                if let Some(pos) = stopped_tokens.iter().position(|t| {
+                    line.strip_prefix(open.as_bytes())
+                        .and_then(|inner| inner.strip_suffix(close.as_bytes()))
+                        == Some(t.as_slice())
+                }) {
+                    stopped_tokens.swap_remove(pos);
+                    continue;
+                }
+
+                // Group title → plain text (drop a titleless `::group::` rather
+                // than emit a stray blank line); `::endgroup::` dropped.
+                // `::warning::`/`::error::`/`::notice::` annotations fall
+                // through verbatim.
+                if let Some(title) = line.strip_prefix(group.as_bytes()) {
+                    if !title.is_empty() {
+                        out.write_all(title)?;
+                        out.write_all(b"\n")?;
+                    }
+                    continue;
+                }
+                if line.starts_with(endgroup.as_bytes()) {
+                    continue;
+                }
+            }
+            out.write_all(&bytes)?;
+        }
+
+        stdout.flush()?;
+        stderr.flush()
+    }
+}
+
+impl Drop for BufferSink {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+impl LineSink for BufferSink {
+    fn emit(&self, _prefix: &str, is_stderr: bool, line: &str) -> io::Result<()> {
+        if self.closed.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+
+        let len = line
+            .len()
+            .checked_add(1)
+            .and_then(|len| u64::try_from(len).ok())
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "line too long"))?;
+        let marker = if is_stderr {
+            STREAM_STDERR
+        } else {
+            STREAM_STDOUT
+        };
+        let mut record_header = [0_u8; 9];
+        record_header[0] = marker;
+        record_header[1..].copy_from_slice(&len.to_le_bytes());
+
+        let written = {
+            let mut file = self.file()?;
+            if self.closed.load(Ordering::SeqCst) {
+                return Ok(());
+            }
+            file.write_all(&record_header)
+                .and_then(|()| file.write_all(line.as_bytes()))
+                .and_then(|()| file.write_all(b"\n"))
+        };
+        if written.is_err() {
+            self.close();
+        }
+        written
+    }
+}
+
+/// Compute the right-padded width for prefix labels in the chain.
+pub(crate) fn prefix_width(names: &[&str]) -> usize {
+    names.iter().map(|n| n.chars().count()).max().unwrap_or(0)
+}
+
+/// Deterministic ANSI color for a task name, chosen from an 8-color
+/// palette so multiple parallel tasks visually distinguish.
+pub(crate) fn color_for(name: &str) -> Color {
+    const PALETTE: [Color; 8] = [
+        Color::Cyan,
+        Color::Magenta,
+        Color::Yellow,
+        Color::Green,
+        Color::Blue,
+        Color::Red,
+        Color::BrightCyan,
+        Color::BrightMagenta,
+    ];
+    let hash = name
+        .bytes()
+        .fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(u32::from(b)));
+    PALETTE[hash as usize % PALETTE.len()]
+}
+
+/// Render a prefix bracket for `name` padded to `width` characters.
+/// Skips color when `colorize == false` (`NO_COLOR` or non-TTY).
+pub(crate) fn render_prefix(name: &str, width: usize, colorize: bool) -> String {
+    let padded = format!("{name:<width$}");
+    let bracketed = format!("[{padded}]");
+    if colorize {
+        bracketed.color(color_for(name)).to_string()
+    } else {
+        bracketed
+    }
+}
+
+/// Spawn one reader thread per `(prefix, is_stderr, reader)` entry in
+/// `streams`. Each thread reads its `Read` line-by-line and pushes the
+/// result through `sink`, draining the reader to its end whether or not
+/// `sink` accepts the lines; wrap `sink` in a [`Delivery`] to observe that. Returns the `Vec<JoinHandle<()>>` for the
+/// spawned threads. The caller joins each handle once the underlying
+/// pipes close (which happens naturally when each child process exits
+/// and the OS tears its stdio fds down).
+pub(crate) fn spawn_readers<R>(
+    streams: Vec<(String, bool, R)>,
+    sink: &Arc<dyn LineSink>,
+) -> Vec<JoinHandle<()>>
+where
+    R: Read + Send + 'static,
+{
+    streams
+        .into_iter()
+        .map(|(prefix, is_stderr, reader)| {
+            let sink = Arc::clone(sink);
+            std::thread::spawn(move || {
+                let buf = BufReader::new(reader);
+                let mut lines = buf.lines();
+                while let Some(Ok(line)) = lines.next() {
+                    if sink.emit(&prefix, is_stderr, &line).is_err() {
+                        lines.by_ref().for_each(drop);
+                        return;
+                    }
+                }
+            })
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    /// Test sink that records every emit into a shared `Vec`. Lets the
+    /// reader tests assert order-insensitively without standing up the
+    /// production stdio locking path.
+    struct VecSink {
+        lines: Mutex<Vec<(String, bool, String)>>,
+    }
+
+    impl VecSink {
+        fn new() -> Self {
+            Self {
+                lines: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn take(&self) -> Vec<(String, bool, String)> {
+            std::mem::take(&mut *self.lines.lock().unwrap())
+        }
+    }
+
+    impl LineSink for VecSink {
+        fn emit(&self, prefix: &str, is_stderr: bool, line: &str) -> io::Result<()> {
+            self.lines
+                .lock()
+                .unwrap()
+                .push((prefix.to_string(), is_stderr, line.to_string()));
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn prefix_width_picks_longest() {
+        assert_eq!(prefix_width(&["a", "build", "test"]), 5);
+        assert_eq!(prefix_width(&[]), 0);
+    }
+
+    #[test]
+    fn color_for_is_deterministic() {
+        assert_eq!(color_for("build"), color_for("build"));
+    }
+
+    #[test]
+    fn render_prefix_pads_and_brackets() {
+        let p = render_prefix("a", 5, false);
+        assert_eq!(p, "[a    ]");
+    }
+
+    #[test]
+    fn render_prefix_colors_when_enabled() {
+        // `colored` honors global SHOULD_COLORIZE which is off in non-TTY
+        // test runs; force it on for this test only.
+        colored::control::set_override(true);
+        let p = render_prefix("a", 1, true);
+        colored::control::unset_override();
+        assert!(p.contains("[a]"));
+        assert!(p.contains("\u{1b}["), "expected ANSI escape, got: {p:?}");
+    }
+
+    #[test]
+    fn buffer_sink_replays_both_streams_to_original_destinations() {
+        let sink = BufferSink::new().expect("buffer sink should open");
+        sink.emit("[ignored]", false, "first").unwrap();
+        sink.emit("[ignored]", true, "second").unwrap();
+        sink.close();
+
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        sink.replay_to(&mut stdout, &mut stderr, false)
+            .expect("buffer should replay");
+
+        assert_eq!(stdout, b"first\n");
+        assert_eq!(stderr, b"second\n");
+    }
+
+    fn command(name: &'static str, message: &str) -> String {
+        actions_rs::WorkflowCommand::new(name)
+            .message(message)
+            .to_string()
+    }
+
+    fn warning(message: &str) -> String {
+        actions_rs::Annotation::new()
+            .command(actions_rs::AnnotationKind::Warning, message)
+            .to_string()
+    }
+
+    #[test]
+    fn replay_neutralizes_child_group_commands_when_enabled() {
+        let sink = BufferSink::new().expect("buffer sink should open");
+        sink.emit("[i]", false, &command("group", "Building"))
+            .unwrap();
+        sink.emit("[i]", false, "compiling...").unwrap();
+        sink.emit("[i]", false, &command("endgroup", "")).unwrap();
+        sink.emit("[i]", false, &command("group", "")).unwrap();
+        sink.emit("[i]", true, &warning("heads up")).unwrap();
+        sink.close();
+
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        sink.replay_to(&mut stdout, &mut stderr, true)
+            .expect("buffer should replay");
+
+        assert_eq!(stdout, b"Building\ncompiling...\n");
+        assert_eq!(stderr, format!("{}\n", warning("heads up")).as_bytes());
+    }
+
+    #[test]
+    fn replay_without_neutralize_keeps_child_group_commands_verbatim() {
+        let sink = BufferSink::new().expect("buffer sink should open");
+        sink.emit("[i]", false, &command("group", "X")).unwrap();
+        sink.emit("[i]", false, &command("endgroup", "")).unwrap();
+        sink.close();
+
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        sink.replay_to(&mut stdout, &mut stderr, false)
+            .expect("buffer should replay");
+
+        assert_eq!(
+            stdout,
+            format!("{}\n{}\n", command("group", "X"), command("endgroup", "")).as_bytes()
+        );
+    }
+
+    #[test]
+    fn replay_neutralizes_stop_commands_and_paired_resume() {
+        let sink = BufferSink::new().expect("buffer sink should open");
+        sink.emit("[i]", false, &command("stop-commands", "abc123"))
+            .unwrap();
+        sink.emit("[i]", false, "real output").unwrap();
+        sink.emit("[i]", false, &command("abc123", "")).unwrap();
+        sink.emit("[i]", false, &command("other", "")).unwrap();
+        sink.emit("[i]", true, &warning("kept")).unwrap();
+        sink.close();
+
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        sink.replay_to(&mut stdout, &mut stderr, true)
+            .expect("buffer should replay");
+
+        assert_eq!(
+            stdout,
+            format!("real output\n{}\n", command("other", "")).as_bytes()
+        );
+        assert_eq!(stderr, format!("{}\n", warning("kept")).as_bytes());
+    }
+
+    struct FullSink;
+
+    impl LineSink for FullSink {
+        fn emit(&self, _: &str, _: bool, _: &str) -> io::Result<()> {
+            Err(io::Error::from(io::ErrorKind::StorageFull))
+        }
+    }
+
+    #[test]
+    fn delivery_records_a_failed_write_and_readers_drain_past_it() {
+        let delivery = Arc::new(Delivery::new(Arc::new(FullSink)));
+        assert!(!delivery.failed());
+        let stream = io::Cursor::new(b"one\ntwo\n".to_vec());
+        for handle in spawn_readers(
+            vec![(String::new(), false, stream)],
+            &(Arc::clone(&delivery) as Arc<dyn LineSink>),
+        ) {
+            handle.join().unwrap();
+        }
+        assert!(delivery.failed());
+    }
+
+    #[test]
+    fn spawn_readers_streams_lines_through_sink() {
+        let sink = Arc::new(VecSink::new());
+        let stream = io::Cursor::new(b"hello\nworld\n".to_vec());
+        let handles = spawn_readers(
+            vec![("[t]".into(), false, stream)],
+            &(Arc::clone(&sink) as Arc<dyn LineSink>),
+        );
+        for h in handles {
+            h.join().unwrap();
+        }
+        let mut got: Vec<String> = sink.take().into_iter().map(|(_, _, line)| line).collect();
+        got.sort();
+        assert_eq!(got, vec!["hello".to_string(), "world".to_string()]);
+    }
+
+    #[test]
+    fn spawn_readers_routes_stderr_flag_through_sink() {
+        let sink = Arc::new(VecSink::new());
+        let out = io::Cursor::new(b"o\n".to_vec());
+        let err = io::Cursor::new(b"e\n".to_vec());
+        let handles = spawn_readers(
+            vec![("[t]".into(), false, out), ("[t]".into(), true, err)],
+            &(Arc::clone(&sink) as Arc<dyn LineSink>),
+        );
+        for h in handles {
+            h.join().unwrap();
+        }
+        let mut got = sink.take();
+        got.sort_by_key(|(_, is_err, _)| *is_err);
+        assert_eq!(got[0].2, "o");
+        assert!(!got[0].1);
+        assert_eq!(got[1].2, "e");
+        assert!(got[1].1);
+    }
+}

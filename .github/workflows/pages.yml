@@ -1,0 +1,17 @@
+---
+name: Upload schemas to GitHub Pages
+on: { push: { branches: [master], paths: [schemas/**] } }
+permissions: { contents: read, id-token: write, pages: write }
+jobs:
+  upload:
+    if: github.repository == 'kjanat/runner'
+    runs-on: ubuntu-slim
+    timeout-minutes: 10
+    environment: { name: github-pages, url: "${{ steps.deployment.outputs.page_url }}" }
+    steps: [
+      { uses: actions/checkout@v7, with: { sparse-checkout: schemas/*.schema.json, sparse-checkout-cone-mode: false } },
+      { uses: actions/configure-pages@v6, with: { enablement: true }, id: conf },
+      uses: kjanat/404@master,
+      { uses: actions/upload-pages-artifact@v5, with: { path: . } },
+      { uses: actions/deploy-pages@v5, id: deployment },
+    ]

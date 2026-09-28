@@ -1,0 +1,8 @@
+build:
+    @echo "build-ran"
+
+test:
+    @echo "test-ran"
+
+fail-mid:
+    @exit 7

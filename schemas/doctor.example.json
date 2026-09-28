@@ -1,0 +1,225 @@
+{
+  "$schema": "https://kjanat.github.io/runner/schemas/doctor.schema.json",
+  "schema_version": 1,
+  "kind": "runner.doctor",
+  "invocation": {
+    "argv": [
+      "runner",
+      "doctor",
+      "--json"
+    ],
+    "cwd": "/path/to/project",
+    "started_at": "2026-01-01T00:00:00Z"
+  },
+  "environment": {
+    "arch": "x86_64",
+    "os": "linux",
+    "path_entries": [
+      "/usr/local/bin",
+      "/usr/bin"
+    ],
+    "shell": "bash"
+  },
+  "runner": {
+    "binary": "/usr/local/bin/runner",
+    "name": "runner",
+    "version": "0.0.0",
+    "schema_versions": {
+      "doctor": 1,
+      "list": 1,
+      "why": 1
+    }
+  },
+  "project": {
+    "monorepo": false,
+    "root": "/path/to/project",
+    "root_source": "/path/to/project",
+    "workspace": null
+  },
+  "overrides": {
+    "dry_run": false,
+    "download": {
+      "value": true,
+      "explicit": false
+    },
+    "failure_policy": "wait",
+    "install_tools": true,
+    "lockfile": "update",
+    "script_policy": "default",
+    "output": {
+      "quiet": "off",
+      "progress": true,
+      "warnings": true,
+      "errors": true,
+      "groups": true,
+      "timing": true,
+      "summary": true,
+      "fatal_errors": true,
+      "tool": "normal",
+      "parallel_buffer": null
+    },
+    "pm": null,
+    "runtime": null,
+    "source": null,
+    "env": {
+      "project": [],
+      "tool": {},
+      "task": {}
+    },
+    "tasks": {}
+  },
+  "ecosystems": [
+    {
+      "decision": {
+        "confidence": "high",
+        "reason": "bun via package.json \"packageManager\"",
+        "selected": "bun"
+      },
+      "name": "node",
+      "root": "/path/to/project",
+      "selected_package_manager": "bun",
+      "signals": {
+        "lockfile_pm": "bun",
+        "manifest_pm": {
+          "pm": "bun",
+          "source": "packageManager",
+          "version": "1.1.0",
+          "on_fail": "ignore"
+        },
+        "path_probe": {
+          "bun": "/usr/bin/bun",
+          "npm": "/usr/bin/npm"
+        }
+      }
+    }
+  ],
+  "sources": [
+    {
+      "exists": true,
+      "id": "src:root:package.json",
+      "kind": "package.json",
+      "package": null,
+      "path": "/path/to/project/package.json",
+      "relpath": "package.json",
+      "scope": "root",
+      "task_pointer": "scripts"
+    },
+    {
+      "exists": true,
+      "id": "src:root:just",
+      "kind": "just",
+      "package": null,
+      "path": "/path/to/project/justfile",
+      "relpath": "justfile",
+      "scope": "root",
+      "task_pointer": null
+    }
+  ],
+  "tasks": [
+    {
+      "aliases": [],
+      "cwd": "/path/to/project",
+      "definition": null,
+      "dependencies": [],
+      "description": null,
+      "fqn": "root:package.json#build",
+      "is_alias": false,
+      "name": "build",
+      "resolved": "bun run build",
+      "scope": "root",
+      "source": "/path/to/project/package.json",
+      "source_pointer": "scripts.build"
+    },
+    {
+      "aliases": [],
+      "cwd": "/path/to/project",
+      "definition": null,
+      "dependencies": [],
+      "description": null,
+      "fqn": "root:package.json#fmt:update",
+      "is_alias": false,
+      "name": "fmt:update",
+      "resolved": "bun run fmt:update",
+      "scope": "root",
+      "source": "/path/to/project/package.json",
+      "source_pointer": "scripts.fmt:update"
+    },
+    {
+      "aliases": [],
+      "cwd": "/path/to/project",
+      "definition": null,
+      "dependencies": [],
+      "description": null,
+      "fqn": "root:just#build",
+      "is_alias": false,
+      "name": "build",
+      "resolved": "just build",
+      "scope": "root",
+      "source": "/path/to/project/justfile",
+      "source_pointer": "build"
+    }
+  ],
+  "tools": [
+    {
+      "id": "tool:runtime:node",
+      "kind": "runtime",
+      "name": "node",
+      "probe": {
+        "status": "found",
+        "path": "/usr/bin/node",
+        "version": "24.0.0"
+      },
+      "required": true
+    },
+    {
+      "id": "tool:package-manager:bun",
+      "kind": "package-manager",
+      "name": "bun",
+      "probe": {
+        "status": "found",
+        "path": "/usr/bin/bun",
+        "version": "1.1.0"
+      },
+      "required": true
+    },
+    {
+      "id": "tool:task-runner:just",
+      "kind": "task-runner",
+      "name": "just",
+      "probe": {
+        "status": "found",
+        "path": "/usr/bin/just",
+        "version": "1.36.0"
+      },
+      "required": true
+    }
+  ],
+  "conflicts": [
+    {
+      "kind": "duplicate-task-name",
+      "reason": "2 sources define `build`; package.json runs because its source has the higher task priority",
+      "selected": "root:package.json#build",
+      "selector": "build",
+      "severity": "info",
+      "shadowed": [
+        "root:just#build"
+      ]
+    }
+  ],
+  "diagnostics": [],
+  "resolution": {
+    "fqn_policy": "exact-only",
+    "precedence": [
+      "nearest-scope",
+      "qualified-source",
+      "chosen-source",
+      "chosen-dispatcher",
+      "package-manager",
+      "dispatch-order",
+      "task-priority",
+      "provider",
+      "alias-last"
+    ],
+    "short_name_policy": "deterministic-precedence"
+  }
+}

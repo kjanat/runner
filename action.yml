@@ -4,12 +4,17 @@ author: Kaj Kowalski
 branding: { icon: play, color: blue }
 
 inputs:
-  version: { description: "Tool version to install: `latest` (default), exact pin (`v?0.10.0`), or semver/tag (`1`, `0.10`, `v0.10`).", default: latest }
+  version: { description: "Tool version to install: `latest` (default), exact pin (`v?0.10.0`), or semver prefix (`1`, `0.10`). Overrides `version-file`." }
+  version-file: { description: "Path to a `.tool-versions` file whose `runner` (or mise `github:kjanat/runner`) line sets the version." }
+  verify: { description: "Run `gh attestation verify` on the downloaded package: `auto` (warn when unattested), `require`, or `off`.", default: auto }
+  token: { description: "GitHub token for the attestation lookup and `gh attestation verify`.", default: "${{ github.token }}" }
 
 outputs:
   version: { description: "Concrete installed version (e.g. `0.10.0`), resolved post-install." }
-  bin-dir: { description: npm global bin directory containing `runner` / `run` (added to PATH). }
+  bin-dir: { description: Directory containing the `runner` / `run` binaries (added to PATH). }
+  runner-bin: { description: Full path to the `runner` binary. }
+  run-bin: { description: Full path to the `run` binary. }
 
 runs:
   using: node24
-  main: action.mjs
+  main: packaging/action/action.mjs

@@ -1,0 +1,1147 @@
+{
+  "$id": "https://kjanat.github.io/runner/schemas/doctor.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "Chosen": {
+      "description": "A chosen provider and the layer that chose it.",
+      "type": "object",
+      "required": [
+        "origin",
+        "value"
+      ],
+      "properties": {
+        "origin": {
+          "type": "string",
+          "enum": [
+            "cli",
+            "env",
+            "task-config",
+            "config"
+          ]
+        },
+        "value": {
+          "$ref": "#/$defs/PackageManagerLabel"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Chosen2": {
+      "description": "A chosen provider and the layer that chose it.",
+      "type": "object",
+      "required": [
+        "origin",
+        "value"
+      ],
+      "properties": {
+        "origin": {
+          "type": "string",
+          "enum": [
+            "cli",
+            "env",
+            "task-config",
+            "config"
+          ]
+        },
+        "value": {
+          "$ref": "#/$defs/JsRuntimeLabel"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Chosen3": {
+      "description": "A chosen provider and the layer that chose it.",
+      "type": "object",
+      "required": [
+        "origin",
+        "value"
+      ],
+      "properties": {
+        "origin": {
+          "type": "string",
+          "enum": [
+            "cli",
+            "env",
+            "task-config",
+            "config"
+          ]
+        },
+        "value": {
+          "$ref": "#/$defs/TaskSourceLabel"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Confidence": {
+      "description": "How sure the resolver is about an ecosystem's PM selection.",
+      "oneOf": [
+        {
+          "description": "Explicit signal: override, manifest declaration, or lockfile.",
+          "type": "string",
+          "const": "high"
+        },
+        {
+          "description": "Inferred: PATH probe found a usable binary.",
+          "type": "string",
+          "const": "medium"
+        },
+        {
+          "description": "Resolution failed.",
+          "type": "string",
+          "const": "none"
+        }
+      ]
+    },
+    "Conflict": {
+      "description": "A task-name or install-directory conflict, tagged by `kind`.",
+      "oneOf": [
+        {
+          "description": "A task name claimed by more than one source: which task wins and which\nfully-qualified task names are shadowed.",
+          "type": "object",
+          "required": [
+            "kind",
+            "reason",
+            "selected",
+            "selector",
+            "severity",
+            "shadowed"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "duplicate-task-name"
+            },
+            "reason": {
+              "type": "string"
+            },
+            "selected": {
+              "description": "FQN of the winning task.",
+              "type": "string"
+            },
+            "selector": {
+              "description": "Conflicting task name.",
+              "type": "string"
+            },
+            "severity": {
+              "$ref": "#/$defs/Severity"
+            },
+            "shadowed": {
+              "description": "FQNs of the shadowed tasks.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "description": "Package managers that write the same installation directory: which\npackage manager installs it and which package managers are shadowed.",
+          "type": "object",
+          "required": [
+            "kind",
+            "reason",
+            "selected",
+            "selector",
+            "severity",
+            "shadowed"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "install-dir-collision"
+            },
+            "reason": {
+              "type": "string"
+            },
+            "selected": {
+              "description": "Label of the selected package manager.",
+              "type": "string"
+            },
+            "selector": {
+              "description": "Path of the conflicting installation directory.",
+              "type": "string"
+            },
+            "severity": {
+              "$ref": "#/$defs/Severity"
+            },
+            "shadowed": {
+              "description": "Labels of the shadowed package managers.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "DependencyKind": {
+      "description": "What kind of thing a probed tool is. The draft's `binary` /\n`package-binary` kinds join when something probes them.",
+      "type": "string",
+      "enum": [
+        "runtime",
+        "package-manager",
+        "task-runner"
+      ]
+    },
+    "Diagnostic": {
+      "description": "One detection/resolution diagnostic, flattened from the warning\nstreams.",
+      "type": "object",
+      "required": [
+        "code",
+        "message",
+        "severity",
+        "source",
+        "task"
+      ],
+      "properties": {
+        "code": {
+          "description": "Stable warning category (the warning's source subsystem).",
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "severity": {
+          "$ref": "#/$defs/Severity"
+        },
+        "source": {
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "task": {
+          "type": [
+            "null",
+            "string"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "DoctorTask": {
+      "description": "One task in the doctor inventory. Same identity scheme as `why`\n(`fqn`, `source_pointer`, `aliases`, `definition`, `resolved`).",
+      "type": "object",
+      "required": [
+        "aliases",
+        "cwd",
+        "definition",
+        "dependencies",
+        "description",
+        "fqn",
+        "is_alias",
+        "name",
+        "resolved",
+        "scope",
+        "source",
+        "source_pointer"
+      ],
+      "properties": {
+        "aliases": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "definition": {
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "dependencies": {
+          "description": "Tasks that run before this one, as the source declares them. Filled from `mise tasks --json`; empty for sources without dependency edges.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "description": {
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "fqn": {
+          "type": "string"
+        },
+        "is_alias": {
+          "description": "True when this task is an alias for another target; `definition` holds the target it expands to (e.g. cargo `b` → `build`).",
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        },
+        "resolved": {
+          "description": "Effective command preview. Null when it depends on a PM resolution that failed.",
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "scope": {
+          "description": "`root`, or the workspace member name the task belongs to.",
+          "type": "string"
+        },
+        "source": {
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "source_pointer": {
+          "type": [
+            "null",
+            "string"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "Download": {
+      "enum": [
+        true,
+        false,
+        "ask"
+      ]
+    },
+    "DownloadReport": {
+      "type": "object",
+      "required": [
+        "explicit",
+        "value"
+      ],
+      "properties": {
+        "explicit": {
+          "description": "Whether a layer set it; otherwise the interactive default applies.",
+          "type": "boolean"
+        },
+        "value": {
+          "$ref": "#/$defs/Download"
+        }
+      },
+      "additionalProperties": false
+    },
+    "EcosystemDecision": {
+      "type": "object",
+      "required": [
+        "confidence",
+        "reason",
+        "selected"
+      ],
+      "properties": {
+        "confidence": {
+          "$ref": "#/$defs/Confidence"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "selected": {
+          "type": [
+            "null",
+            "string"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "EcosystemEntry": {
+      "description": "One detected ecosystem and the PM decision made for it.",
+      "type": "object",
+      "required": [
+        "decision",
+        "name",
+        "root",
+        "selected_package_manager",
+        "signals"
+      ],
+      "properties": {
+        "decision": {
+          "$ref": "#/$defs/EcosystemDecision"
+        },
+        "name": {
+          "type": "string"
+        },
+        "root": {
+          "type": "string"
+        },
+        "selected_package_manager": {
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "signals": {
+          "description": "Detection evidence. An ecosystem whose task source package managers dispatch carries that source's signals (lockfile, manifest, PATH probe, shims keyed by tool with the shim manager as data); other ecosystems list their detected package managers."
+        }
+      },
+      "additionalProperties": false
+    },
+    "EnvNames": {
+      "description": "The variable *names* each env layer sets. Values never appear here.",
+      "type": "object",
+      "required": [
+        "project",
+        "task",
+        "tool"
+      ],
+      "properties": {
+        "project": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "task": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "tool": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "Environment": {
+      "description": "Host facts that influence probing and dispatch.",
+      "type": "object",
+      "required": [
+        "arch",
+        "os",
+        "path_entries",
+        "shell"
+      ],
+      "properties": {
+        "arch": {
+          "type": "string"
+        },
+        "os": {
+          "type": "string"
+        },
+        "path_entries": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "shell": {
+          "type": [
+            "null",
+            "string"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "FailurePolicy": {
+      "description": "What a chain does after one of its tasks fails.",
+      "oneOf": [
+        {
+          "description": "Keep starting the remaining tasks.",
+          "type": "string",
+          "const": "continue"
+        },
+        {
+          "description": "Start no more tasks and let running ones finish.",
+          "type": "string",
+          "const": "wait"
+        },
+        {
+          "description": "Start no more tasks and stop running ones.",
+          "type": "string",
+          "const": "kill"
+        }
+      ]
+    },
+    "Invocation": {
+      "description": "How this report came to be: the exact process invocation.",
+      "type": "object",
+      "required": [
+        "argv",
+        "cwd",
+        "started_at"
+      ],
+      "properties": {
+        "argv": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "started_at": {
+          "description": "UTC RFC 3339 timestamp of report generation.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "JsRuntimeLabel": {
+      "type": "string",
+      "enum": [
+        "bun",
+        "deno",
+        "node"
+      ]
+    },
+    "LockfilePolicy": {
+      "description": "Whether an install may rewrite the lockfile.",
+      "type": "string",
+      "enum": [
+        "update",
+        "frozen"
+      ]
+    },
+    "OutputReport": {
+      "type": "object",
+      "required": [
+        "errors",
+        "fatal_errors",
+        "groups",
+        "parallel_buffer",
+        "progress",
+        "quiet",
+        "summary",
+        "timing",
+        "tool",
+        "warnings"
+      ],
+      "properties": {
+        "errors": {
+          "type": "boolean"
+        },
+        "fatal_errors": {
+          "type": "boolean"
+        },
+        "groups": {
+          "type": "boolean"
+        },
+        "parallel_buffer": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "progress": {
+          "type": "boolean"
+        },
+        "quiet": {
+          "type": "string",
+          "enum": [
+            "off",
+            "quiet",
+            "very-quiet",
+            "silent",
+            "mute"
+          ]
+        },
+        "summary": {
+          "type": "boolean"
+        },
+        "timing": {
+          "type": "boolean"
+        },
+        "tool": {
+          "type": "string",
+          "enum": [
+            "normal",
+            "quiet",
+            "reduced"
+          ]
+        },
+        "warnings": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Overrides": {
+      "description": "The settings in effect for this run, each at its effective value.",
+      "type": "object",
+      "required": [
+        "download",
+        "dry_run",
+        "env",
+        "failure_policy",
+        "install_tools",
+        "lockfile",
+        "output",
+        "pm",
+        "runtime",
+        "script_policy",
+        "source",
+        "tasks"
+      ],
+      "properties": {
+        "download": {
+          "$ref": "#/$defs/DownloadReport"
+        },
+        "dry_run": {
+          "type": "boolean"
+        },
+        "env": {
+          "$ref": "#/$defs/EnvNames",
+          "description": "Variable names each `env` layer sets, narrowest last. Values are withheld: this payload is meant to be pasted into a bug report."
+        },
+        "failure_policy": {
+          "$ref": "#/$defs/FailurePolicy"
+        },
+        "install_tools": {
+          "type": "boolean"
+        },
+        "lockfile": {
+          "$ref": "#/$defs/LockfilePolicy"
+        },
+        "output": {
+          "$ref": "#/$defs/OutputReport"
+        },
+        "pm": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Chosen"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "runtime": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Chosen2"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "script_policy": {
+          "$ref": "#/$defs/ScriptPolicy"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Chosen3"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tasks": {
+          "description": "The provider choices each `[tasks.<name>]` table makes.",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/TaskReport"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "PackageManagerLabel": {
+      "type": "string",
+      "enum": [
+        "npm",
+        "yarn",
+        "pnpm",
+        "bun",
+        "deno",
+        "cargo",
+        "go",
+        "uv",
+        "poetry",
+        "pipenv",
+        "bundler",
+        "composer"
+      ]
+    },
+    "ProjectInfo": {
+      "description": "Project anchoring facts.",
+      "type": "object",
+      "required": [
+        "monorepo",
+        "root",
+        "root_source",
+        "workspace"
+      ],
+      "properties": {
+        "monorepo": {
+          "type": "boolean"
+        },
+        "root": {
+          "type": "string"
+        },
+        "root_source": {
+          "description": "What anchored root detection: the root itself (cwd or --dir), or `workspace root of member <name>` when the invocation directory sits inside a workspace member.",
+          "type": "string"
+        },
+        "workspace": {
+          "description": "Workspace declarations at the root and their members; null when the root declares no workspace.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkspaceInfo"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "ResolutionPolicy": {
+      "description": "Self-description of the task-selection policy, so consumers don't\nhardcode runner's precedence rules.",
+      "type": "object",
+      "required": [
+        "fqn_policy",
+        "precedence",
+        "short_name_policy"
+      ],
+      "properties": {
+        "fqn_policy": {
+          "type": "string"
+        },
+        "precedence": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "short_name_policy": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "RunnerInfo": {
+      "description": "The reporting binary's own identity and contract versions.",
+      "type": "object",
+      "required": [
+        "binary",
+        "name",
+        "schema_versions",
+        "version"
+      ],
+      "properties": {
+        "binary": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "schema_versions": {
+          "$ref": "#/$defs/SchemaVersions"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "SchemaVersions": {
+      "description": "Latest schema version each `--json` surface speaks.",
+      "type": "object",
+      "required": [
+        "doctor",
+        "list",
+        "why"
+      ],
+      "properties": {
+        "doctor": {
+          "type": "integer",
+          "minimum": 0,
+          "format": "uint32"
+        },
+        "list": {
+          "type": "integer",
+          "minimum": 0,
+          "format": "uint32"
+        },
+        "why": {
+          "type": "integer",
+          "minimum": 0,
+          "format": "uint32"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ScriptPolicy": {
+      "description": "Whether an install runs lifecycle scripts.",
+      "oneOf": [
+        {
+          "description": "Each package manager's own default.",
+          "type": "string",
+          "const": "default"
+        },
+        {
+          "description": "Skip them where the package manager can.",
+          "type": "string",
+          "const": "deny"
+        },
+        {
+          "description": "Run them where the package manager can be told to.",
+          "type": "string",
+          "const": "allow"
+        }
+      ]
+    },
+    "Severity": {
+      "description": "Severity of a conflict or diagnostic. The draft's `debug`/`error`\nlevels join when something emits them.",
+      "type": "string",
+      "enum": [
+        "info",
+        "warning"
+      ]
+    },
+    "SourceEntry": {
+      "description": "One task-source config file as a first-class object.",
+      "type": "object",
+      "required": [
+        "exists",
+        "id",
+        "kind",
+        "package",
+        "path",
+        "relpath",
+        "scope",
+        "task_pointer"
+      ],
+      "properties": {
+        "exists": {
+          "type": "boolean"
+        },
+        "id": {
+          "description": "Stable source identity: `src:<scope>:<kind>`.",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/TaskSourceLabel",
+          "description": "Structured source label (same convention as `why`)."
+        },
+        "package": {
+          "description": "Workspace member identity (`name`, `path`) for member sources; null for root sources."
+        },
+        "path": {
+          "type": "string"
+        },
+        "relpath": {
+          "type": "string"
+        },
+        "scope": {
+          "description": "`root`, or the workspace member name the source belongs to.",
+          "type": "string"
+        },
+        "task_pointer": {
+          "description": "Key of the container holding tasks inside the file (`scripts`, `tasks`, `alias`, …); null for flat-format files.",
+          "type": [
+            "null",
+            "string"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "TaskReport": {
+      "type": "object",
+      "required": [
+        "pm",
+        "runtime",
+        "source"
+      ],
+      "properties": {
+        "pm": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PackageManagerLabel"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "runtime": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JsRuntimeLabel"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TaskSourceLabel"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "TaskSourceLabel": {
+      "type": "string",
+      "enum": [
+        "turbo",
+        "package.json",
+        "make",
+        "just",
+        "task",
+        "deno",
+        "cargo",
+        "go",
+        "bacon",
+        "mise",
+        "pyproject.toml"
+      ]
+    },
+    "Tool": {
+      "description": "One PATH-probed tool the project relies on.",
+      "type": "object",
+      "required": [
+        "id",
+        "kind",
+        "name",
+        "probe",
+        "required"
+      ],
+      "properties": {
+        "id": {
+          "description": "Stable tool identity: `tool:<kind>:<name>`.",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/DependencyKind"
+        },
+        "name": {
+          "type": "string"
+        },
+        "probe": {
+          "$ref": "#/$defs/ToolProbe"
+        },
+        "required": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ToolProbe": {
+      "description": "PATH-probe outcome, tagged by `status`.",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "path",
+            "status",
+            "version"
+          ],
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string",
+              "const": "found"
+            },
+            "version": {
+              "description": "Resolved version: taken from detection when known, otherwise read by running `<binary> --version`. Null when the binary reports no parseable version.",
+              "type": [
+                "null",
+                "string"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "status"
+          ],
+          "properties": {
+            "status": {
+              "type": "string",
+              "const": "missing"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "WorkspaceInfo": {
+      "description": "Workspace declarations and members projected into the JSON shape.",
+      "type": "object",
+      "required": [
+        "current",
+        "kinds",
+        "members",
+        "root"
+      ],
+      "properties": {
+        "current": {
+          "description": "Name of the member the invocation directory sits in, if any.",
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "kinds": {
+          "description": "Declaration labels in detection order (e.g. `\"package.json workspaces\"`).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "members": {
+          "description": "Members in path order.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WorkspaceMemberInfo"
+          }
+        },
+        "root": {
+          "description": "Absolute directory holding the declarations.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkspaceMemberInfo": {
+      "description": "One workspace member.",
+      "type": "object",
+      "required": [
+        "dir",
+        "name",
+        "path"
+      ],
+      "properties": {
+        "dir": {
+          "description": "Absolute directory.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Manifest name, or the directory name when the manifest declares none.",
+          "type": "string"
+        },
+        "path": {
+          "description": "Directory relative to the workspace root, forward slashes.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "title": "runner doctor --json",
+  "description": "JSON schema for `runner doctor --json`: structured diagnostic inventory with invocation/environment provenance, per-ecosystem decisions, sources, fqn-keyed tasks, tools, conflicts, and diagnostics.",
+  "type": "object",
+  "required": [
+    "$schema",
+    "conflicts",
+    "diagnostics",
+    "ecosystems",
+    "environment",
+    "invocation",
+    "kind",
+    "overrides",
+    "project",
+    "resolution",
+    "runner",
+    "schema_version",
+    "sources",
+    "tasks",
+    "tools"
+  ],
+  "properties": {
+    "$schema": {
+      "description": "URI of the JSON Schema that describes this payload.",
+      "type": "string"
+    },
+    "conflicts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Conflict"
+      }
+    },
+    "diagnostics": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Diagnostic"
+      }
+    },
+    "ecosystems": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/EcosystemEntry"
+      }
+    },
+    "environment": {
+      "$ref": "#/$defs/Environment"
+    },
+    "invocation": {
+      "$ref": "#/$defs/Invocation"
+    },
+    "kind": {
+      "description": "Payload discriminator; always \"runner.doctor\".",
+      "type": "string"
+    },
+    "overrides": {
+      "$ref": "#/$defs/Overrides"
+    },
+    "project": {
+      "$ref": "#/$defs/ProjectInfo"
+    },
+    "resolution": {
+      "$ref": "#/$defs/ResolutionPolicy"
+    },
+    "runner": {
+      "$ref": "#/$defs/RunnerInfo"
+    },
+    "schema_version": {
+      "description": "Schema contract version for this JSON payload.",
+      "type": "integer",
+      "const": 1,
+      "minimum": 0,
+      "format": "uint32"
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/SourceEntry"
+      }
+    },
+    "tasks": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/DoctorTask"
+      }
+    },
+    "tools": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Tool"
+      }
+    }
+  },
+  "additionalProperties": false
+}

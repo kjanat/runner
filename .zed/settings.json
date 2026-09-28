@@ -1,25 +1,52 @@
-// Folder-specific settings
-//
-// For a full list of overridable settings, and general information on folder-specific settings,
-// see the documentation: https://zed.dev/docs/configuring-zed#settings-files
 {
 	"formatter": [
 		{ "language_server": { "name": "dprint" } },
-		{ "external": { "command": "dprint", "arguments": ["fmt", "--stdin", "{buffer_path}"] } }
+		{ "external": { "command": "dprint", "arguments": ["fmt", "--stdin", "{buffer_path}"] } },
 	],
 	"prettier": { "allowed": false },
 	"lsp": {
 		"json-language-server": {
-			"settings": { "json": { "schemas": [{ "fileMatch": ["targets.json"], "url": "./npm/targets.schema.json" }] } }
+			"settings": {
+				"json": {
+					"schemas": [
+						{ "fileMatch": ["targets.json"], "url": "./packaging/npm/targets.schema.json" },
+						{
+							"fileMatch": ["schemas/*.schema.json", "*.schema.json"],
+							"url": "https://json-schema.org/draft/2020-12/schema",
+						},
+						{
+							"fileMatch": ["schemas/doctor.example.json", "doctor.example.json"],
+							"url": "./schemas/doctor.schema.json",
+						},
+						{
+							"fileMatch": ["schemas/list.example.json", "list.example.json"],
+							"url": "./schemas/list.schema.json",
+						},
+						{
+							"fileMatch": ["schemas/why.example.json", "why.example.json"],
+							"url": "./schemas/why.schema.json",
+						},
+					],
+				},
+			},
 		},
-		"rust-analyzer": {
+		// "rust-analyzer": {
+		// 	"initialization_options": {
+		// 		"diagnostics": { "experimental": { "enable": true } },
+		// 		"check": { "allTargets": true, "features": "all", "workspace": true },
+		// 		"cargo": { "allTargets": true, "features": ["all"] },
+		// 	},
+		// },
+		"cargo-tom": {
 			"initialization_options": {
-				"diagnostics": { "experimental": { "enable": true } },
-				"check": { "workspace": true, "allTargets": true, "features": "all" },
-				"cargo": { "allTargets": true, "features": ["schema-gen", "run"] }
-			}
-		}
+				"per_page": 25, // Search
+				"feature_display_mode": "UnusedOpt", // What features should be displayed on hover: All | UnusedOpt | Features,
+				"hide_docs_info_message": true,
+				"sort_format": false, // Sort toml on format
+				"stable_version": true, // Use stable versions in completions
+			},
+		},
 	},
-	"file_types": { "SVG": ["*.ico"] },
-	"languages": { "TOML": { "language_servers": ["tombi", "..."] } }
+	"file_types": { "SVG": ["*.ico"], "Shell Script": [".runner-dev"] },
+	"languages": { "TOML": { "language_servers": ["tombi", "..."] }, "Rust": { "wrap_guides": [100] } },
 }

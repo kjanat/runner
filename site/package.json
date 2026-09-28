@@ -14,23 +14,27 @@
 		"prebuild": "bun run gen",
 		"build": "vite build",
 		"check": "bun run gen && svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
-		"deploy": "bun run build && wrangler deploy",
+		"deploy": "run -s build wrangler:deploy",
 		"dev": "bun run gen && vite dev",
 		"fmt": "bunx dprint fmt",
 		"gen": "bun scripts/gen-site-data.ts",
 		"lint": "eslint .",
 		"preview": "vite preview",
-		"test": "bun run gen && vitest run"
+		"test": "bun run gen && vitest run",
+		"wrangler:deploy": "wrangler deploy",
+		"wrangler:preview": "wrangler preview",
+		"wrangler:tail": "wrangler tail"
 	},
 	"devDependencies": {
 		"@eslint/js": "^10.0.1",
 		"@sveltejs/adapter-cloudflare": "^7.2.4",
 		"@sveltejs/kit": "^2.49.2",
 		"@sveltejs/vite-plugin-svelte": "^7.1.2",
-		"@types/bun": "^1.3.13",
+		"@types/bun": "catalog:",
 		"eslint": "^10.4.0",
 		"eslint-plugin-svelte": "^3.17.1",
 		"globals": "^17.6.0",
+		"runner-run": "catalog:",
 		"svelte": "^5.43.2",
 		"svelte-check": "^4.4.1",
 		"svelte-eslint-parser": "^1.6.1",
@@ -38,6 +42,10 @@
 		"typescript-eslint": "^8.59.4",
 		"vite": "^8.0.13",
 		"vitest": "^4.1.6",
-		"wrangler": "^4.93.0"
+		"wrangler": "catalog:"
+	},
+	"packageManager": "bun@1.4.2",
+	"volta": {
+		"extends": "../package.json"
 	}
 }

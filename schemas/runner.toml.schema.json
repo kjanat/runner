@@ -1,147 +1,417 @@
 {
+  "$id": "https://kjanat.github.io/runner/schemas/runner.toml.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "RunnerConfig",
-  "description": "Top-level schema for `runner.toml`.",
-  "type": "object",
-  "properties": {
-    "chain": {
-      "description": "`[chain]` — failure policy for multi-task chains.",
-      "$ref": "#/$defs/ChainSection"
-    },
-    "pm": {
-      "description": "`[pm]` — per-ecosystem package-manager overrides.",
-      "$ref": "#/$defs/PmSection"
-    },
-    "resolution": {
-      "description": "`[resolution]` — resolver-policy knobs.",
-      "$ref": "#/$defs/ResolutionSection"
-    },
-    "task_runner": {
-      "description": "`[task_runner]` — task-runner preferences.",
-      "$ref": "#/$defs/TaskRunnerSection"
-    }
-  },
-  "additionalProperties": false,
   "$defs": {
-    "ChainSection": {
-      "description": "`[chain]` section — failure policy for `run -s/-p` chains and\n`runner install <tasks>`.\n\n`Option<bool>` rather than `bool` so the resolver can distinguish\n\"user explicitly set false\" from \"user didn't say\": env-overrides-\nconfig layering means `[chain].keep_going = false` plus\n`RUNNER_KEEP_GOING=1` resolves to `true`.",
+    "ChainSettings": {
+      "description": "`[chain]`.",
       "type": "object",
       "properties": {
-        "keep_going": {
-          "description": "Run every task in the chain to completion regardless of failures.\nMutually exclusive with `kill_on_fail`. Equivalent to `-k` /\n`RUNNER_KEEP_GOING`.",
-          "type": [
-            "boolean",
-            "null"
-          ],
-          "default": null
-        },
-        "kill_on_fail": {
-          "description": "Parallel only: terminate sibling tasks immediately on first\nfailure (forcible kill, not graceful shutdown — uncatchable on\nUnix). Mutually exclusive with `keep_going`. Equivalent to\n`--kill-on-fail` / `RUNNER_KILL_ON_FAIL`. Ignored in sequential\ncontexts.",
-          "type": [
-            "boolean",
-            "null"
-          ],
-          "default": null
+        "on_fail": {
+          "description": "What happens after a task in a chain fails: `continue` starts the rest,\n`wait` starts no more and lets running tasks finish, `kill` also stops\nthe running ones.",
+          "default": "wait",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FailurePolicy"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
-      "additionalProperties": false,
-      "not": {
-        "properties": {
-          "keep_going": {
-            "const": true
-          },
-          "kill_on_fail": {
-            "const": true
+      "additionalProperties": false
+    },
+    "Download": {
+      "enum": [
+        true,
+        false,
+        "ask"
+      ]
+    },
+    "FailurePolicy": {
+      "description": "What a chain does after one of its tasks fails.",
+      "oneOf": [
+        {
+          "description": "Keep starting the remaining tasks.",
+          "type": "string",
+          "const": "continue"
+        },
+        {
+          "description": "Start no more tasks and let running ones finish.",
+          "type": "string",
+          "const": "wait"
+        },
+        {
+          "description": "Start no more tasks and stop running ones.",
+          "type": "string",
+          "const": "kill"
+        }
+      ]
+    },
+    "InstallSettings": {
+      "description": "`[install]`.",
+      "type": "object",
+      "properties": {
+        "frozen": {
+          "description": "Install exactly what the lockfile pins, without changing it.",
+          "default": false,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "scripts": {
+          "description": "Run dependencies' lifecycle scripts. Unset leaves each package\nmanager's own default.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "tools": {
+          "description": "Install the toolchains detected tool managers (`mise`) declare before\nthe dependencies.",
+          "default": true,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "OutputSettings": {
+      "description": "`[output]`: the task-level output settings plus the ones that apply to a\nwhole invocation.",
+      "type": "object",
+      "properties": {
+        "errors": {
+          "description": "Print runner's error messages. A failed command still fails.",
+          "default": true,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "groups": {
+          "description": "Wrap a task's output in a collapsible GitHub Actions group.",
+          "default": true,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "parallel": {
+          "$ref": "#/$defs/ParallelOutput",
+          "description": "Parallel chains."
+        },
+        "progress": {
+          "description": "Print the line naming the command a task runs.",
+          "default": true,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "summary": {
+          "description": "Print a summary after a chain.",
+          "default": true,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "task": {
+          "$ref": "#/$defs/StreamOutput",
+          "description": "The task's own output."
+        },
+        "timing": {
+          "description": "Print how long a task in a chain took.",
+          "default": true,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "tool": {
+          "$ref": "#/$defs/ToolOutput",
+          "description": "The tool that runs a task."
+        },
+        "warnings": {
+          "description": "Print warnings.",
+          "default": true,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "ParallelOutput": {
+      "description": "`[output.parallel]`.",
+      "type": "object",
+      "properties": {
+        "buffer": {
+          "description": "Hold each parallel task's output and print it as one block when the\ntask ends. Unset, runner buffers under GitHub Actions and interleaves\nprefixed lines elsewhere.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "RuntimeSettings": {
+      "description": "`[runtime]`, shared by the project and each task.",
+      "type": "object",
+      "properties": {
+        "javascript": {
+          "description": "The runtime JavaScript and TypeScript run on.",
+          "type": [
+            "null",
+            "string"
+          ],
+          "anyOf": [
+            {
+              "enum": [
+                "bun",
+                "deno",
+                "node",
+                null
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^(?:bunx|deno\\.json|deno\\.jsonc)$"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "StreamOutput": {
+      "description": "`[output.task]`.",
+      "type": "object",
+      "properties": {
+        "stderr": {
+          "description": "Show the task's stderr. `false` discards it.",
+          "default": true,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "stdout": {
+          "description": "Show the task's stdout. `false` discards it.",
+          "default": true,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "TaskOutput": {
+      "description": "The output settings `[output]` and `[tasks.<name>.output]` share.",
+      "type": "object",
+      "properties": {
+        "groups": {
+          "description": "Wrap a task's output in a collapsible GitHub Actions group.",
+          "default": true,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "progress": {
+          "description": "Print the line naming the command a task runs.",
+          "default": true,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "task": {
+          "$ref": "#/$defs/StreamOutput",
+          "description": "The task's own output."
+        },
+        "timing": {
+          "description": "Print how long a task in a chain took.",
+          "default": true,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "tool": {
+          "$ref": "#/$defs/ToolOutput",
+          "description": "The tool that runs a task."
+        }
+      },
+      "additionalProperties": false
+    },
+    "TaskSettings": {
+      "description": "`[tasks.<name>]`.",
+      "type": "object",
+      "properties": {
+        "env": {
+          "description": "Variables this task's process gets, over `[tools.<name>.env]` and\n`[env]`.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
           }
         },
-        "required": [
-          "keep_going",
-          "kill_on_fail"
-        ]
-      }
-    },
-    "PmSection": {
-      "description": "`[pm]` section — per-ecosystem package manager overrides.",
-      "type": "object",
-      "properties": {
-        "node": {
-          "description": "Package manager used to dispatch Node `package.json` scripts.\nValid values: `npm`, `pnpm`, `yarn`, `bun`, `deno`.",
+        "output": {
+          "$ref": "#/$defs/TaskOutput",
+          "description": "This task's output, over `[output]`."
+        },
+        "pm": {
+          "description": "The package manager that runs this task.",
           "type": [
-            "string",
-            "null"
+            "null",
+            "string"
           ],
-          "enum": [
-            "npm",
-            "pnpm",
-            "yarn",
-            "bun",
-            "deno",
-            null
+          "anyOf": [
+            {
+              "enum": [
+                "npm",
+                "yarn",
+                "pnpm",
+                "bun",
+                "deno",
+                "cargo",
+                "go",
+                "uv",
+                "poetry",
+                "pipenv",
+                "bundler",
+                "composer",
+                null
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^(?:npx|yarnpkg|pnpx|bunx|deno\\.json|deno\\.jsonc|cargo-alias|go\\.mod|bundle)$"
+            }
           ]
         },
-        "python": {
-          "description": "Package manager used for Python ecosystems.\nValid values: `uv`, `poetry`, `pipenv`.",
+        "runtime": {
+          "$ref": "#/$defs/RuntimeSettings",
+          "description": "The runtime this task runs on, over `[runtime]`."
+        },
+        "source": {
+          "description": "The task source that must supply this task (`just`, `package.json`, …).",
           "type": [
-            "string",
-            "null"
+            "null",
+            "string"
           ],
-          "enum": [
-            "uv",
-            "poetry",
-            "pipenv",
-            null
+          "anyOf": [
+            {
+              "enum": [
+                "turbo",
+                "package.json",
+                "make",
+                "just",
+                "task",
+                "deno",
+                "cargo",
+                "go",
+                "bacon",
+                "mise",
+                "pyproject.toml",
+                null
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^(?:turbo\\.json|turbo\\.jsonc|Makefile|justfile|go-task|Taskfile|deno\\.json|deno\\.jsonc|cargo-alias|go\\.mod|bacon\\.toml|rtx|mise\\.toml|\\.mise\\.toml|pyproject)$"
+            }
           ]
         }
       },
       "additionalProperties": false
     },
-    "ResolutionSection": {
-      "description": "`[resolution]` section — resolver policy knobs.",
+    "ToolOutput": {
+      "description": "`[output.tool]`.",
       "type": "object",
       "properties": {
-        "fallback": {
-          "description": "`probe` (default) — PATH probe in canonical order when no signals\nmatch; `npm` — legacy silent fallback; `error` — refuse to proceed.",
+        "quiet": {
+          "description": "Pass the tool its own quiet flag (`npm --silent`, `make -s`), where it\nhas one that keeps the task's output.",
+          "default": false,
           "type": [
-            "string",
+            "boolean",
             "null"
-          ],
-          "enum": [
-            "probe",
-            "npm",
-            "error",
-            null
-          ]
-        },
-        "on_mismatch": {
-          "description": "`warn` (default), `error`, `ignore` — how to react when declaration\n(manifest field) disagrees with detection (lockfile).",
-          "type": [
-            "string",
-            "null"
-          ],
-          "enum": [
-            "warn",
-            "error",
-            "ignore",
-            null
           ]
         }
       },
       "additionalProperties": false
     },
-    "TaskRunnerSection": {
-      "description": "`[task_runner]` section — preferred ordering for ambiguous tasks.",
+    "ToolSettings": {
+      "description": "`[tools.<name>]`.",
       "type": "object",
       "properties": {
-        "prefer": {
-          "description": "Ranked preference list. Restricts candidates to runners in the\nlist (in listed order); a same-named task under a runner not in\nthe list is hard-rejected. Parsed into [`crate::types::TaskRunner`]\nat resolver-init time so unknown labels fail fast.\n\nValid values: `turbo`, `nx`, `make`, `just`, `task`, `mise`,\n`bacon`. (Not constrained in the JSON Schema — the runtime\nparser emits a more helpful error than a schema-validation\nfailure would.)",
-          "type": "array",
-          "default": [],
-          "items": {
+        "env": {
+          "description": "Variables every invocation of this tool gets, over `[env]`.",
+          "type": "object",
+          "additionalProperties": {
             "type": "string"
           }
         }
       },
       "additionalProperties": false
     }
-  }
+  },
+  "title": "RunnerConfig",
+  "description": "`runner.toml`.",
+  "type": "object",
+  "properties": {
+    "chain": {
+      "$ref": "#/$defs/ChainSettings",
+      "description": "How a chain of tasks reacts to a failure."
+    },
+    "download": {
+      "description": "Whether runner may download a package to run a command: `true`,\n`false`, or `\"ask\"` to confirm each download. Unset, runner asks on an\ninteractive terminal and downloads otherwise.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Download"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "env": {
+      "description": "Variables every process runner spawns gets.",
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "install": {
+      "$ref": "#/$defs/InstallSettings",
+      "description": "What `runner install` does."
+    },
+    "output": {
+      "$ref": "#/$defs/OutputSettings",
+      "description": "What runner, the tools it runs and the tasks print."
+    },
+    "runtime": {
+      "$ref": "#/$defs/RuntimeSettings",
+      "description": "The runtime each language's scripts and files run on."
+    },
+    "tasks": {
+      "description": "Settings for one task, keyed by its name. `source:name`, `member:name`\nand `member:source#name` address one task among same-named ones.",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/TaskSettings"
+      }
+    },
+    "tools": {
+      "description": "Settings for one tool, keyed by its name (`mise`, `just`, …).",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/ToolSettings"
+      }
+    }
+  },
+  "additionalProperties": false
 }

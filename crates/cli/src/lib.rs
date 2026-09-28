@@ -1,0 +1,2140 @@
+//! # Runner (`runner-run` crate)
+//!
+//! ## Overview
+//!
+//! Universal project task runner.
+//!
+//! `runner` auto-detects your project's toolchain (package managers, task
+//! runners, version constraints) and provides a unified interface to run
+//! tasks, install dependencies, clean artifacts, and execute ad-hoc commands.
+//!
+//! ## Supported Ecosystems
+//!
+//! **Package managers/ecosystems:** [npm], [yarn], [pnpm], [bun], [cargo],
+//! [deno], [uv], [poetry], [pipenv], [go], [bundler], [composer]
+//!
+//! **Task runners:** [turbo], [nx], [make], [just], [go-task], [mise], [bacon]
+//!
+//! [npm]: https://www.npmjs.com/
+//! [yarn]: https://yarnpkg.com/
+//! [pnpm]: https://pnpm.io/
+//! [bun]: https://bun.sh/
+//! [cargo]: https://doc.rust-lang.org/cargo/
+//! [deno]: https://deno.land/
+//! [uv]: https://github.com/astral-sh/uv/
+//! [poetry]: https://python-poetry.org/
+//! [pipenv]: https://pipenv.pypa.io/
+//! [go]: https://go.dev/
+//! [bundler]: https://bundler.io/
+//! [composer]: https://getcomposer.org/
+//! [turbo]: https://turborepo.dev/
+//! [nx]: https://nx.dev/
+//! [make]: https://www.gnu.org/software/make/
+//! [just]: https://just.systems/
+//! [go-task]: https://taskfile.dev/
+//! [mise]: https://mise.jdx.dev/
+//! [bacon]: https://dystroy.org/bacon/
+//!
+//! ## Library API
+//!
+//! - [`run_from_env`] parses process args and dispatches in current dir.
+//! - [`run_from_args`] parses explicit args and dispatches in current dir.
+//! - [`run_in_dir`] parses explicit args and dispatches against a given dir.
+//!
+//! ## CLI Usage
+//!
+//! ```bash
+//! runner              # show detected project info
+//! runner <task>       # run a task (falls back to package-manager exec)
+//! run <task>          # alias binary: a same-named task wins, else the
+//!                     #   built-in default (install/clean/list/info/
+//!                     #   completions), else PM exec
+//! runner run <target> # explicit unified run: task → built-in → PM exec
+//! runner install      # ALWAYS the built-in (deps); a task named `install`
+//!                     #   is reached via `run install`
+//! runner clean        # remove caches and build artifacts (always built-in)
+//! runner list         # list available tasks from all sources (always built-in)
+//! ```
+// Generate docs with `cargo doc --document-private-items --open`.
+
+#![doc(
+    html_logo_url = "https://raw.githubusercontent.com/kjanat/runner/d876a0b9716806d92e07f5d5560b022b6158ecd5/branding/icon.svg",
+    html_favicon_url = "https://raw.githubusercontent.com/kjanat/runner/d876a0b9716806d92e07f5d5560b022b6158ecd5/branding/icon.svg"
+)]
+
+mod args;
+pub(crate) mod chain;
+mod commands;
+mod complete;
+mod config;
+mod detect;
+mod invocation;
+mod provider;
+mod render;
+mod resolver;
+mod schema;
+mod tool;
+mod types;
+
+use std::ffi::OsString;
+use std::io::IsTerminal;
+use std::path::{Path, PathBuf};
+
+use anyhow::{Result, bail};
+use clap::CommandFactory;
+use colored::Colorize;
+
+use resolver::ResolveError;
+
+#[derive(Debug)]
+struct FatalOutputSuppressed {
+    error: anyhow::Error,
+    exit_code: i32,
+}
+
+impl std::fmt::Display for FatalOutputSuppressed {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.error.fmt(formatter)
+    }
+}
+
+impl std::error::Error for FatalOutputSuppressed {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.error.as_ref())
+    }
+}
+
+/// JSON Schema for `runner.toml`. Built under the `schema` feature;
+/// `runner schema` renders it.
+#[must_use]
+pub fn config_schema() -> schemars::Schema {
+    schemars::schema_for!(config::RunnerConfig)
+}
+
+/// Exit code semantics:
+/// - `0`, success
+/// - `1`, generic failure (I/O, detection, child-process non-zero)
+/// - `2`, resolver could not satisfy intent (typed resolver error)
+///
+/// `main` and `bin/run.rs` use this to map an [`anyhow::Error`] to the
+/// right code: anything that downcasts to the internal resolver-error
+/// type is 2, everything else is 1. The resolver-error type itself is
+/// crate-private; only the exit-code projection is part of the
+/// library's public surface.
+#[must_use]
+pub fn exit_code_for_error(err: &anyhow::Error) -> i32 {
+    if let Some(suppressed) = err.downcast_ref::<FatalOutputSuppressed>() {
+        return suppressed.exit_code;
+    }
+    if err.downcast_ref::<ResolveError>().is_some() {
+        2
+    } else {
+        1
+    }
+}
+
+/// Whether a fatal error from the `runner` invocation should be muted.
+#[must_use]
+pub fn runner_error_is_muted() -> bool {
+    let args: Vec<OsString> = std::env::args_os().collect();
+    parse_cli(args.clone()).map_or_else(
+        |_| {
+            quiet_level_from_args(args, args::TaskPosition::AfterRunSubcommand)
+                == tool::QuietLevel::Mute
+        },
+        |parsed| quiet_level_for_error(parsed.cli.global.quiet) == tool::QuietLevel::Mute,
+    )
+}
+
+/// Whether resolved policy suppressed this failure's fatal diagnostic.
+#[must_use]
+pub fn error_suppresses_fatal_output(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<FatalOutputSuppressed>().is_some()
+}
+
+/// Whether a fatal error from the `run` alias invocation should be muted.
+#[must_use]
+pub fn run_alias_error_is_muted() -> bool {
+    let args: Vec<OsString> = std::env::args_os().collect();
+    parse_run_alias_cli(args.clone()).map_or_else(
+        |_| quiet_level_from_args(args, args::TaskPosition::First) == tool::QuietLevel::Mute,
+        |parsed| quiet_level_for_error(parsed.cli.global.quiet) == tool::QuietLevel::Mute,
+    )
+}
+
+fn quiet_level_for_error(cli_count: u8) -> tool::QuietLevel {
+    if cli_count > 0 {
+        return tool::QuietLevel::from_count(cli_count);
+    }
+    std::env::var("RUNNER_QUIET")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .map_or_default(|count| {
+            tool::QuietLevel::from_count(u8::try_from(count).unwrap_or(u8::MAX))
+        })
+}
+
+fn quiet_level_from_args<I, T>(args: I, task_position: args::TaskPosition) -> tool::QuietLevel
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString>,
+{
+    let args: Vec<OsString> = args.into_iter().map(Into::into).collect();
+    let args = args::forward_args_after_task(&args, task_position).unwrap_or(args);
+    let mut count = 0_u8;
+    for arg in args.into_iter().skip(1) {
+        let Some(word) = arg.to_str() else { continue };
+        if word == "--" {
+            break;
+        }
+        let increment = if word == "--quiet" {
+            1
+        } else if let Some(shorts) = word.strip_prefix('-').filter(|shorts| !shorts.is_empty()) {
+            shorts.bytes().take_while(|byte| *byte == b'q').count()
+        } else {
+            0
+        };
+        count = count.saturating_add(u8::try_from(increment).unwrap_or(u8::MAX));
+    }
+    quiet_level_for_error(count)
+}
+
+const REPOSITORY_URL: &str = env!("CARGO_PKG_REPOSITORY");
+const VERSION: &str = clap::crate_version!();
+const BUILD_REVISION: &str = env!("RUNNER_BUILD_REVISION");
+const BUILD_RUSTC: &str = env!("RUNNER_BUILD_RUSTC");
+const BUILD_CHANNEL: &str = env!("RUNNER_BUILD_CHANNEL");
+const BUILD_DIRTY: bool = matches!(env!("RUNNER_BUILD_DIRTY").as_bytes(), b"true");
+
+/// Parse process args, detect current dir, dispatch, return exit code.
+///
+/// When the `COMPLETE` environment variable is set (e.g. `COMPLETE=zsh`),
+/// this function writes shell completions to stdout and exits without
+/// running the normal command dispatch.
+///
+/// # Errors
+///
+/// Returns an error when reading current dir fails, project detection fails,
+/// command execution fails, or writing clap output fails.
+///
+/// Argument parsing/help/version flows are rendered by clap and returned as an
+/// exit code instead of terminating the host process.
+pub fn run_from_env() -> Result<i32> {
+    let bin = bin_name_from_arg0(&std::env::args_os().next().unwrap_or_default())
+        .unwrap_or_else(|| "runner".to_string());
+    clap_complete::CompleteEnv::with_factory(move || {
+        configure_cli_command(args::Cli::command(), true)
+            .name(bin.clone())
+            .bin_name(bin.clone())
+    })
+    .shells(complete::SHELLS)
+    .complete();
+    run_from_args(std::env::args_os())
+}
+
+/// Parse explicit args, detect current dir, dispatch, return exit code.
+///
+/// `args` must include `argv[0]` as first item.
+///
+/// # Errors
+///
+/// Returns an error when reading current dir fails, project detection fails,
+/// command execution fails, or writing clap output fails.
+///
+/// Argument parsing/help/version flows are rendered by clap and returned as an
+/// exit code instead of terminating the host process.
+pub fn run_from_args<I, T>(args: I) -> Result<i32>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+{
+    let cwd = std::env::current_dir()?;
+    run_in_dir(args, &cwd)
+}
+
+/// Parse explicit args and run against `dir`.
+///
+/// `args` must include `argv[0]` as first item.
+///
+/// # Errors
+///
+/// Returns an error when project detection fails, command execution fails, or
+/// writing clap output fails.
+///
+/// Argument parsing/help/version flows are rendered by clap and returned as an
+/// exit code instead of terminating the host process.
+pub fn run_in_dir<I, T>(args: I, dir: &Path) -> Result<i32>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+{
+    let original_args: Vec<OsString> = args.into_iter().map(Into::into).collect();
+    let quiet_level = quiet_level_from_args(
+        original_args.clone(),
+        args::TaskPosition::AfterRunSubcommand,
+    );
+    let parsed = match parse_cli(original_args.clone()) {
+        Ok(parsed) => parsed,
+        Err(err) => return render_clap_error(&err, quiet_level == tool::QuietLevel::Mute),
+    };
+    if let Some(request) = version_request(&parsed.cli.version, parsed.cli.global.quiet) {
+        println!(
+            "{}",
+            version_output(&original_args, request, std::io::stdout().is_terminal())
+        );
+        return Ok(0);
+    }
+    // The language server parses each editor buffer itself and needs neither a
+    // resolved project dir nor detection; handle it before either can bail.
+    #[cfg(feature = "lsp")]
+    if matches!(parsed.cli.command.as_ref(), Some(args::Command::Lsp)) {
+        return commands::lsp::run();
+    }
+    let doctor = matches!(parsed.cli.command, Some(args::Command::Doctor { .. }));
+    let env_warnings = env_issues(&parsed, doctor)?;
+    let project_dir = resolve_project_dir(parsed.cli.global.project_dir.as_deref(), dir)?;
+    dispatch(parsed.cli, &parsed.origins, env_warnings, &project_dir)
+}
+
+/// Every variable whose value its flag rejects, as warnings for `doctor`.
+///
+/// # Errors
+/// For any other command, the first such variable this invocation reads and
+/// no command-line value overrides.
+fn env_issues<P>(
+    parsed: &invocation::Parsed<P>,
+    doctor: bool,
+) -> Result<Vec<types::DetectionWarning>> {
+    if !doctor && let Some(issue) = parsed.blocking_issues().next() {
+        bail!(
+            "{}={}: {}",
+            issue.var,
+            invocation::sanitize(&issue.raw),
+            invocation::sanitize_message(&issue.raw, &issue.message)
+        );
+    }
+    Ok(if doctor {
+        parsed
+            .env_issues
+            .iter()
+            .map(|issue| types::DetectionWarning::InvalidEnvOverride {
+                var: issue.var.clone(),
+                raw: invocation::sanitize(&issue.raw),
+                message: invocation::sanitize_message(&issue.raw, &issue.message),
+            })
+            .collect()
+    } else {
+        Vec::new()
+    })
+}
+
+fn parse_cli<I, T>(args: I) -> Result<invocation::Parsed<args::Cli>, clap::Error>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+{
+    let args: Vec<OsString> = args.into_iter().map(Into::into).collect();
+    let args = args::forward_args_after_task(&args, args::TaskPosition::AfterRunSubcommand)
+        .unwrap_or(args);
+
+    let mut command = configure_cli_command(
+        invocation::bind(args::Cli::command(), invocation::PREFIX),
+        std::io::stdout().is_terminal(),
+    );
+    if let Some(bin_name) = args.first().and_then(bin_name_from_arg0) {
+        command = command.name(bin_name.clone()).bin_name(bin_name);
+    }
+    let args = prioritize_top_level_help(args, &command);
+    command = shorten_help_subcommand(command);
+
+    let parsed = invocation::parse::<args::Cli>(command.clone(), &args)?;
+    if version_request(&parsed.cli.version, parsed.cli.global.quiet).is_some()
+        && parsed.cli.command.is_some()
+    {
+        return Err(command.error(
+            clap::error::ErrorKind::ArgumentConflict,
+            "a version selector cannot be used with a command",
+        ));
+    }
+    Ok(parsed)
+}
+
+/// Move a leading top-level help request ahead of earlier options so help wins
+/// over an error in those options.
+///
+/// clap intentionally parses left-to-right and returns an unknown-argument
+/// error before it can reach a later `--help`. This is the sole precedence
+/// policy applied before clap: it recognizes only clap's own help spellings,
+/// stops at the first positional or forwarding delimiter, and derives the
+/// value-taking option spellings from the same [`clap::Command`]. All other
+/// argument recognition and validation remains clap-owned.
+fn prioritize_top_level_help(args: Vec<OsString>, command: &clap::Command) -> Vec<OsString> {
+    let value_flags = command
+        .get_arguments()
+        .filter(|arg| !arg.is_positional() && arg.get_action().takes_values())
+        .flat_map(|arg| {
+            arg.get_long()
+                .map(|long| format!("--{long}"))
+                .into_iter()
+                .chain(arg.get_short().map(|short| format!("-{short}")))
+        })
+        .collect::<Vec<_>>();
+    let mut index = 1;
+
+    while index < args.len() {
+        let Some(word) = args[index].to_str() else {
+            return args;
+        };
+        if word == "--" || !word.starts_with('-') {
+            return args;
+        }
+        if matches!(word, "-h" | "--help") {
+            return vec![args[0].clone(), args[index].clone()];
+        }
+        let takes_value = value_flags.iter().any(|flag| flag == word);
+        index += 1;
+        if takes_value
+            && args
+                .get(index)
+                .is_some_and(|value| !matches!(value.to_str(), Some("-h" | "--help")))
+        {
+            index += 1;
+        }
+    }
+
+    args
+}
+
+/// Replace clap's verbose default `help` subcommand description
+/// (`"Print this message or the help of the given subcommand(s)"`) with a terse
+/// one. clap only injects the implicit `help` subcommand during `Command::build`,
+/// so force the build first; the `Built` flag makes the later parse-time build a
+/// no-op. Guarded with `find_subcommand` because a flat command without
+/// subcommands (the `run` alias) never gets a `help` entry, and `mut_subcommand`
+/// panics on a missing name. Must run after `name`/`bin_name` are set, since
+/// `build` snapshots bin names.
+fn shorten_help_subcommand(mut command: clap::Command) -> clap::Command {
+    command.build();
+    if command.find_subcommand("help").is_some() {
+        command.mut_subcommand("help", |help| help.about("Print help for a subcommand"))
+    } else {
+        command
+    }
+}
+
+/// Parse process args as the `run` alias binary, detect the current dir,
+/// dispatch, and return the exit code.
+///
+/// Always treats positional arguments as a task or command (routed through
+/// `commands::run`); built-in subcommand names are never parsed specially, so
+/// `run clean`, `run install`, etc. run a same-named project task when one
+/// exists. When no such task exists, a bare run token naming a built-in verb
+/// (`install`/`clean`/`list`/`info`/`completions`) falls back to that
+/// built-in's default form rather than the package-manager exec path.
+///
+/// When the `COMPLETE` environment variable is set, writes shell completions
+/// to stdout and exits without running the normal command dispatch.
+///
+/// # Errors
+///
+/// Returns an error when reading current dir fails, project detection fails,
+/// command execution fails, or writing clap output fails.
+///
+/// Argument parsing/help/version flows are rendered by clap and returned as an
+/// exit code instead of terminating the host process.
+pub fn run_alias_from_env() -> Result<i32> {
+    let bin = bin_name_from_arg0(&std::env::args_os().next().unwrap_or_default())
+        .unwrap_or_else(|| "run".to_string());
+    clap_complete::CompleteEnv::with_factory(move || {
+        configure_cli_command(args::RunAliasCli::command(), true)
+            .name(bin.clone())
+            .bin_name(bin.clone())
+    })
+    .shells(complete::SHELLS)
+    .complete();
+    run_alias_from_args(std::env::args_os())
+}
+
+/// Parse explicit args as the `run` alias binary, detect current dir,
+/// dispatch, and return the exit code. See [`run_alias_from_env`].
+///
+/// `args` must include `argv[0]` as first item.
+///
+/// # Errors
+///
+/// Returns an error when reading current dir fails, project detection fails,
+/// command execution fails, or writing clap output fails.
+pub fn run_alias_from_args<I, T>(args: I) -> Result<i32>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+{
+    let cwd = std::env::current_dir()?;
+    run_alias_in_dir(args, &cwd)
+}
+
+/// Parse explicit args as the `run` alias binary against `dir`.\
+/// See [`run_alias_from_env`].
+///
+/// `args` must include `argv[0]` as first item.
+///
+/// # Errors
+///
+/// Returns an error when project detection fails, command execution fails, or
+/// writing clap output fails.
+pub fn run_alias_in_dir<I, T>(args: I, dir: &Path) -> Result<i32>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+{
+    let original_args: Vec<OsString> = args.into_iter().map(Into::into).collect();
+
+    let quiet_level = quiet_level_from_args(original_args.clone(), args::TaskPosition::First);
+    let parsed = match parse_run_alias_cli(original_args.clone()) {
+        Ok(parsed) => parsed,
+        Err(err) => return render_clap_error(&err, quiet_level == tool::QuietLevel::Mute),
+    };
+    if let Some(request) = version_request(&parsed.cli.version, parsed.cli.global.quiet) {
+        println!(
+            "{}",
+            version_output(&original_args, request, std::io::stdout().is_terminal())
+        );
+        return Ok(0);
+    }
+    let env_warnings = env_issues(&parsed, false)?;
+    let project_dir = resolve_project_dir(parsed.cli.global.project_dir.as_deref(), dir)?;
+    dispatch_run_alias(parsed.cli, &parsed.origins, env_warnings, &project_dir)
+}
+
+fn parse_run_alias_cli<I, T>(args: I) -> Result<invocation::Parsed<args::RunAliasCli>, clap::Error>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+{
+    let args: Vec<OsString> = args.into_iter().map(Into::into).collect();
+    let args = args::forward_args_after_task(&args, args::TaskPosition::First).unwrap_or(args);
+
+    let mut command = configure_cli_command(
+        invocation::bind(args::RunAliasCli::command(), "RUNNER_RUN"),
+        std::io::stdout().is_terminal(),
+    );
+    if let Some(bin_name) = args.first().and_then(bin_name_from_arg0) {
+        command = command.name(bin_name.clone()).bin_name(bin_name);
+    }
+    let args = prioritize_top_level_help(args, &command);
+
+    let parsed = invocation::parse::<args::RunAliasCli>(command.clone(), &args)?;
+    let cli = &parsed.cli;
+    let has_task_action = cli.task.is_some()
+        || !cli.args.is_empty()
+        || cli.mode.sequential
+        || cli.mode.parallel
+        || cli.global.failure.keep_going
+        || cli.global.failure.kill_on_fail;
+    if version_request(&cli.version, cli.global.quiet).is_some() && has_task_action {
+        return Err(command.error(
+            clap::error::ErrorKind::ArgumentConflict,
+            "a version selector cannot be used with a task or chain option",
+        ));
+    }
+    Ok(parsed)
+}
+
+/// Dispatch a parsed `run`-alias CLI by funnelling it through the same
+/// [`dispatch`] entry point the `runner` binary uses, so both share a
+/// single resolver-override + command-dispatch implementation rather than
+/// keeping a second copy in sync.
+///
+/// The alias is a thin shortcut for `runner run <task>`, so a parsed
+/// [`args::RunAliasCli`] maps onto [`args::Cli`] one-to-one:
+/// - a bare invocation (no task and no `-s`/`-p` mode flag) becomes
+///   `command: None`, reproducing the bare-`runner` project dashboard.
+///   A lone `-k`/`-K` does not defeat this: the chain-failure flags are
+///   inert on the dashboard (which never reads the failure policy) and are
+///   dropped before override building, so, unlike the old eager builder,
+///   a bare `run -k`/`-K` no longer conflicts with an opposite-polarity
+///   `RUNNER_KILL_ON_FAIL`/`RUNNER_KEEP_GOING` or `[chain]` config;
+/// - everything else becomes [`args::Command::Run`] carrying the alias's
+///   task, forwarded args, and chain flags.
+///
+/// Building a typed [`args::Cli`] here, rather than rewriting argv to
+/// `["runner", "run", …]` and re-parsing through clap, keeps the mapping
+/// total and compiler-checked and, crucially, leaves the alias's task-argument
+/// forwarding untouched. Re-parsing through [`args::Command::Run`] would lose
+/// the delimiter placement already established by the alias parse layer.
+fn dispatch_run_alias(
+    cli: args::RunAliasCli,
+    origins: &invocation::Origins,
+    env_warnings: Vec<types::DetectionWarning>,
+    dir: &Path,
+) -> Result<i32> {
+    let bare = cli.task.is_none() && cli.mode.mode().is_none();
+    let command = if bare {
+        None
+    } else {
+        Some(args::Command::Run {
+            task: cli.task,
+            args: cli.args,
+            mode: cli.mode,
+        })
+    };
+    dispatch(
+        args::Cli {
+            global: cli.global,
+            version: cli.version,
+            command,
+        },
+        origins,
+        env_warnings,
+        dir,
+    )
+}
+
+/// Extracts the filename portion from an `argv[0]`-style `OsString`, returning it when non-empty.
+///
+/// Returns `Some(String)` with the file name if `arg0` has a non-empty file-name segment, `None` otherwise.
+///
+/// Strips a trailing `.exe` suffix (case-insensitive) so Windows builds present the
+/// same `runner` / `run` identifier in `--version`, `--help`, and the `Usage:` line
+/// as Unix builds. Without this, clap's bin-name plumbing surfaces the raw
+/// `runner.exe` from `argv[0]`, leaking the platform-specific extension into UX.
+///
+/// # Examples
+///
+/// ```rust
+/// use std::ffi::OsString;
+/// let name = runner::bin_name_from_arg0(&OsString::from("/usr/bin/runner"));
+/// assert_eq!(name.as_deref(), Some("runner"));
+///
+/// let win = runner::bin_name_from_arg0(&OsString::from("runner.exe"));
+/// assert_eq!(win.as_deref(), Some("runner"));
+/// ```
+#[must_use]
+pub fn bin_name_from_arg0(arg0: &OsString) -> Option<String> {
+    let name = Path::new(arg0)
+        .file_name()
+        .map(|segment| segment.to_string_lossy().into_owned())?;
+
+    let trimmed = strip_exe_suffix(&name);
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+/// Strip a trailing `.exe` extension (ASCII case-insensitive) from a file name.
+///
+/// Returns the input unchanged if no such suffix is present. The match is
+/// ASCII-only because Windows treats `.EXE`, `.Exe`, `.exe` etc. as the same
+/// extension, and that case-fold is bounded to ASCII regardless of the active
+/// code page.
+fn strip_exe_suffix(name: &str) -> &str {
+    const SUFFIX: &str = ".exe";
+    if name.len() > SUFFIX.len()
+        && name.is_char_boundary(name.len() - SUFFIX.len())
+        && name[name.len() - SUFFIX.len()..].eq_ignore_ascii_case(SUFFIX)
+    {
+        &name[..name.len() - SUFFIX.len()]
+    } else {
+        name
+    }
+}
+
+/// Attaches the generated help byline to a clap command.
+///
+/// The byline text is produced by `help_byline` using `stdout_is_terminal` and is
+/// applied via `Command::before_help`.
+///
+/// # Examples
+///
+/// ```rust
+/// let cmd = clap::Command::new("app");
+/// let cmd = runner::configure_cli_command(cmd, true);
+/// assert!(cmd.get_before_help().is_some());
+/// ```
+#[must_use]
+pub fn configure_cli_command(command: clap::Command, stdout_is_terminal: bool) -> clap::Command {
+    command.before_help(help_byline(stdout_is_terminal))
+}
+
+/// Render the CLI help byline using the build-time author metadata.
+///
+/// When `stdout_is_terminal` is true and `RUNNER_AUTHOR_EMAIL` is set, the
+/// author name is wrapped in an OSC-8 `mailto:` hyperlink; otherwise the plain
+/// author name is used. The returned string is prefixed with `"by "`.
+///
+/// # Examples
+///
+/// ```rust
+/// // Without a terminal, output is plain "by <name>" using the build-time author.
+/// let s = runner::help_byline(false);
+/// assert!(s.starts_with("by "));
+///
+/// // With a terminal, the name may be wrapped in an OSC-8 mailto: hyperlink,
+/// // but the byline still begins with "by ".
+/// let t = runner::help_byline(true);
+/// assert!(t.starts_with("by "));
+/// ```
+#[must_use]
+pub fn help_byline(stdout_is_terminal: bool) -> String {
+    let name = env!("RUNNER_AUTHOR_NAME");
+    let rendered = if stdout_is_terminal {
+        option_env!("RUNNER_AUTHOR_EMAIL").map_or_else(
+            || name.to_string(),
+            |mail| osc8_link(name, &format!("mailto:{mail}")),
+        )
+    } else {
+        name.to_string()
+    };
+    format!("by {rendered}")
+}
+
+/// Detects whether the provided argv-style slice specifically requests the program version.
+///
+/// # Returns
+///
+/// `true` for a valid top-level version request, optionally combined with
+/// global options, `--json`, or quiet modifiers; `false` otherwise.
+///
+/// # Examples
+///
+/// ```rust
+/// use std::ffi::OsString;
+///
+/// let args = vec![OsString::from("runner"), OsString::from("--version")];
+/// assert!(runner::requests_version(&args));
+///
+/// let args2 = vec![OsString::from("runner"), OsString::from("-V")];
+/// assert!(runner::requests_version(&args2));
+///
+/// let args3 = vec![OsString::from("runner")];
+/// assert!(!runner::requests_version(&args3));
+///
+/// let args4 = vec![OsString::from("runner"), OsString::from("--version"), OsString::from("extra")];
+/// assert!(!runner::requests_version(&args4));
+/// ```
+#[must_use]
+pub fn requests_version(args: &[OsString]) -> bool {
+    parse_cli(args.iter().cloned())
+        .is_ok_and(|parsed| version_request(&parsed.cli.version, parsed.cli.global.quiet).is_some())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum VersionKind {
+    Short,
+    Detailed,
+    Revision,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct VersionRequest {
+    kind: VersionKind,
+    json: bool,
+}
+
+const fn version_request(options: &args::VersionOpts, quiet: u8) -> Option<VersionRequest> {
+    let kind = if options.short.requested() {
+        VersionKind::Short
+    } else if options.detailed.requested() {
+        VersionKind::Detailed
+    } else if options.revision {
+        VersionKind::Revision
+    } else {
+        return None;
+    };
+
+    if quiet > 0 {
+        Some(VersionRequest {
+            kind: VersionKind::Short,
+            json: false,
+        })
+    } else {
+        Some(VersionRequest {
+            kind,
+            json: options.json,
+        })
+    }
+}
+
+fn version_output(args: &[OsString], request: VersionRequest, stdout_is_terminal: bool) -> String {
+    if request.json {
+        return version_json(args);
+    }
+
+    match request.kind {
+        VersionKind::Short => version_line(args, stdout_is_terminal),
+        VersionKind::Revision => format!("{} {}", version_bin(args), revision_version()),
+        VersionKind::Detailed => format!(
+            "{}\nchannel: {BUILD_CHANNEL}\nrevision: {}\ntarget: {}\nprofile: {}\nrustc: \
+             {BUILD_RUSTC}\nhost: {}\nopt-level: {}\ndebug: {}\ntarget-features: {}",
+            version_line(args, stdout_is_terminal),
+            revision_id(),
+            env!("RUNNER_BUILD_TARGET"),
+            env!("RUNNER_BUILD_PROFILE"),
+            env!("RUNNER_BUILD_HOST"),
+            env!("RUNNER_BUILD_OPT_LEVEL"),
+            env!("RUNNER_BUILD_DEBUG"),
+            env!("RUNNER_BUILD_TARGET_FEATURES"),
+        ),
+    }
+}
+
+fn version_json(args: &[OsString]) -> String {
+    serde_json::to_string_pretty(&serde_json::json!({
+        "schema_version": 1,
+        "program": version_bin(args),
+        "version": VERSION,
+        "version_with_revision": revision_version(),
+        "channel": BUILD_CHANNEL,
+        "revision": BUILD_REVISION,
+        "dirty": BUILD_DIRTY,
+        "target": env!("RUNNER_BUILD_TARGET"),
+        "host": env!("RUNNER_BUILD_HOST"),
+        "profile": env!("RUNNER_BUILD_PROFILE"),
+        "opt_level": env!("RUNNER_BUILD_OPT_LEVEL"),
+        "debug": env!("RUNNER_BUILD_DEBUG") == "true",
+        "rustc": BUILD_RUSTC,
+        "rust_version": env!("CARGO_PKG_RUST_VERSION"),
+        "target_config": {
+            "arch": env!("RUNNER_BUILD_TARGET_ARCH"),
+            "os": env!("RUNNER_BUILD_TARGET_OS"),
+            "env": env!("RUNNER_BUILD_TARGET_ENV"),
+            "family": env!("RUNNER_BUILD_TARGET_FAMILY"),
+            "pointer_width": env!("RUNNER_BUILD_TARGET_POINTER_WIDTH"),
+            "endian": env!("RUNNER_BUILD_TARGET_ENDIAN"),
+            "features": env!("RUNNER_BUILD_TARGET_FEATURES")
+                .split(',')
+                .filter(|feature| !feature.is_empty())
+                .collect::<Vec<_>>(),
+        },
+    }))
+    .expect("version metadata only contains JSON-compatible values")
+}
+
+fn revision_id() -> String {
+    let dirty = if BUILD_DIRTY { "-dirty" } else { "" };
+    format!("{BUILD_REVISION}{dirty}")
+}
+
+fn revision_version() -> String {
+    let prerelease = if BUILD_CHANNEL == "stable" {
+        String::new()
+    } else {
+        format!("-{BUILD_CHANNEL}")
+    };
+    let metadata = if BUILD_REVISION == "unknown" {
+        String::new()
+    } else if BUILD_DIRTY {
+        format!("+{BUILD_REVISION}.dirty")
+    } else {
+        format!("+{BUILD_REVISION}")
+    };
+    format!("{VERSION}{prerelease}{metadata}")
+}
+
+fn version_line(args: &[OsString], stdout_is_terminal: bool) -> String {
+    let bin = version_bin(args);
+
+    if !stdout_is_terminal {
+        return format!("{bin} {VERSION}");
+    }
+
+    format!(
+        "{} {}",
+        osc8_link(&bin, REPOSITORY_URL),
+        osc8_link(VERSION, &release_url(VERSION))
+    )
+}
+
+fn version_bin(args: &[OsString]) -> String {
+    args.first()
+        .and_then(bin_name_from_arg0)
+        .unwrap_or_else(|| "runner".to_string())
+}
+
+fn release_url(version: &str) -> String {
+    format!("{REPOSITORY_URL}/releases/tag/v{version}")
+}
+
+fn osc8_link(label: &str, url: &str) -> String {
+    format!("\u{1b}]8;;{url}\u{1b}\\{label}\u{1b}]8;;\u{1b}\\")
+}
+
+/// Expand a leading `~` (or `~/`) in a path to the user's home directory.
+///
+/// Shells only expand an unquoted tilde when it is the first character of a
+/// word, so forms like `--dir=~/foo` arrive here unexpanded. We mirror the
+/// common shell behaviour for the bare `~` and `~/` cases; any other form
+/// (including `~user`) is returned unchanged.
+pub(crate) fn expand_tilde(path: &Path) -> PathBuf {
+    expand_tilde_with(path, home_dir().as_deref())
+}
+
+fn expand_tilde_with(path: &Path, home: Option<&Path>) -> PathBuf {
+    let Some(home) = home else {
+        return path.to_path_buf();
+    };
+
+    match path.strip_prefix("~") {
+        // `~` on its own.
+        Ok(rest) if rest.as_os_str().is_empty() => home.to_path_buf(),
+        // `~/rest` (`strip_prefix` consumes the separator).
+        Ok(rest) => home.join(rest),
+        // Not a tilde path, or a form we don't expand (e.g. `~user`).
+        Err(_) => path.to_path_buf(),
+    }
+}
+
+fn home_dir() -> Option<PathBuf> {
+    let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    std::env::var_os(var)
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+}
+
+fn resolve_project_dir(project_dir: Option<&Path>, cwd: &Path) -> Result<PathBuf> {
+    let project_dir = project_dir.map(expand_tilde);
+    let dir = match project_dir.as_deref() {
+        Some(path) if path.is_absolute() => path.to_path_buf(),
+        Some(path) => cwd.join(path),
+        None => cwd.to_path_buf(),
+    };
+
+    if !dir.exists() {
+        bail!("project dir does not exist: {}", dir.display());
+    }
+    if !dir.is_dir() {
+        bail!("project dir is not a directory: {}", dir.display());
+    }
+
+    Ok(dir)
+}
+
+fn render_clap_error(err: &clap::Error, muted: bool) -> Result<i32> {
+    let exit_code = err.exit_code();
+    if !muted
+        || matches!(
+            err.kind(),
+            clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+        )
+    {
+        err.print()?;
+    }
+    Ok(exit_code)
+}
+
+/// `runner install`, with or without post-install task names.
+fn dispatch_install(
+    ctx: &types::ProjectContext,
+    overrides: &resolver::ResolutionOverrides,
+    mode: args::ChainModeFlags,
+    tasks: &[String],
+) -> Result<i32> {
+    if !tasks.is_empty() {
+        return dispatch_install_chain(ctx, overrides, mode, tasks);
+    }
+    if overrides.shows_progress() && mode.mode().is_some() {
+        eprintln!(
+            "{} chain flags (-s/-p) have no effect without post-install task names",
+            "note:".dimmed(),
+        );
+    }
+    commands::install(ctx, overrides)
+}
+
+fn dispatch_install_chain(
+    ctx: &types::ProjectContext,
+    overrides: &resolver::ResolutionOverrides,
+    mode: args::ChainModeFlags,
+    tasks: &[String],
+) -> Result<i32> {
+    let items = chain::parse::parse_task_list(tasks)?;
+
+    if mode.mode() != Some(chain::ChainMode::Parallel) {
+        // Sequential (default): install is the chain head, then tasks run in
+        // order. `run_chain` pre-flights the task tokens *before* install, so
+        // a typo'd task name aborts ahead of the slow install step.
+        let mut all = vec![chain::ChainItem::install()];
+        all.extend(items);
+        return chain::exec::run_chain(
+            ctx,
+            overrides,
+            &chain::Chain {
+                mode: chain::ChainMode::Sequential,
+                items: all,
+                failure: overrides.failure_policy,
+            },
+        );
+    }
+
+    // Install is the prerequisite of every parallel task, so it runs first;
+    // pre-flight the task tokens so a typo aborts before the slow install.
+    for task in tasks {
+        commands::run::precheck_task(ctx, overrides, task)?;
+    }
+    let started = std::time::Instant::now();
+    let install_code = commands::install(ctx, overrides)?;
+    let install_elapsed = started.elapsed();
+    commands::emit_task_timing(
+        overrides,
+        "install",
+        "install",
+        install_elapsed,
+        install_code,
+    );
+    chain::exec::run_chain_after_completed(
+        ctx,
+        overrides,
+        &chain::Chain {
+            mode: chain::ChainMode::Parallel,
+            items,
+            failure: overrides.failure_policy,
+        },
+        "install",
+        install_elapsed,
+        install_code,
+    )
+}
+
+fn dispatch_run(
+    ctx: &types::ProjectContext,
+    overrides: &resolver::ResolutionOverrides,
+    task: Option<String>,
+    args: Vec<String>,
+    mode: args::ChainModeFlags,
+) -> Result<i32> {
+    if let Some(chain_mode) = mode.mode() {
+        let mut positionals: Vec<String> = Vec::new();
+        if let Some(t) = task {
+            positionals.push(t);
+        }
+        positionals.extend(args);
+        let items = chain::parse::parse_task_list(&positionals)?;
+        let c = chain::Chain {
+            mode: chain_mode,
+            items,
+            failure: overrides.failure_policy,
+        };
+        return chain::exec::run_chain(ctx, overrides, &c);
+    }
+    let Some(task) = task.as_deref() else {
+        bail!(
+            "task name required (drop -s/-p for single-task mode or supply at least one task name)"
+        );
+    };
+    commands::run(ctx, overrides, task, &args, None)
+}
+
+#[derive(clap::Parser)]
+struct BuiltinArgs {
+    #[arg(long, global = true)]
+    schema_version: Option<u32>,
+    #[command(subcommand)]
+    command: args::Command,
+}
+
+fn run_builtin(
+    ctx: &types::ProjectContext,
+    overrides: &resolver::ResolutionOverrides,
+    name: &str,
+    args: &[String],
+    out: &mut render::out::Out<'_>,
+    sink: commands::WarningSink<'_>,
+) -> Result<i32> {
+    let words: Vec<OsString> = ["runner", name]
+        .into_iter()
+        .chain(args.iter().map(String::as_str))
+        .map(OsString::from)
+        .collect();
+    let parsed = match invocation::parse::<BuiltinArgs>(
+        invocation::bind(BuiltinArgs::command(), invocation::PREFIX),
+        &words,
+    ) {
+        Ok(parsed) => parsed,
+        Err(error) => return write_clap_error(&error, !overrides.shows_errors(), out),
+    };
+    if let Some(issue) = parsed.blocking_issues().next() {
+        bail!(
+            "{}={}: {}",
+            issue.var,
+            invocation::sanitize(&issue.raw),
+            invocation::sanitize_message(&issue.raw, &issue.message)
+        );
+    }
+    let mut effective = overrides.clone();
+    apply_install_switches(&mut effective, &parsed.cli.command, &parsed.origins);
+    dispatch_builtin(
+        ctx,
+        &effective,
+        parsed.cli.command,
+        parsed.cli.schema_version,
+        out,
+        sink,
+    )
+}
+
+/// Apply a chained `install`'s own switches over the invocation's settings.
+fn apply_install_switches(
+    overrides: &mut resolver::ResolutionOverrides,
+    command: &args::Command,
+    origins: &invocation::Origins,
+) {
+    let args::Command::Install {
+        frozen,
+        no_frozen,
+        scripts,
+        no_scripts,
+        tools,
+        no_tools,
+        ..
+    } = command
+    else {
+        return;
+    };
+    if let Some((frozen, _)) = origins.switch("frozen", *frozen, *no_frozen) {
+        overrides.lockfile = if frozen {
+            resolver::LockfilePolicy::Frozen
+        } else {
+            resolver::LockfilePolicy::Update
+        };
+    }
+    if let Some((scripts, _)) = origins.switch("scripts", *scripts, *no_scripts) {
+        overrides.script_policy = resolver::ScriptPolicy::from_setting(scripts);
+    }
+    if let Some((tools, _)) = origins.switch("tools", *tools, *no_tools) {
+        overrides.install_tools = tools;
+    }
+}
+
+fn write_clap_error(err: &clap::Error, muted: bool, out: &mut render::out::Out<'_>) -> Result<i32> {
+    if matches!(out, render::out::Out::Stdio(..)) {
+        return render_clap_error(err, muted);
+    }
+    if !muted
+        || matches!(
+            err.kind(),
+            clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+        )
+    {
+        let stream = if err.use_stderr() {
+            out.stderr()
+        } else {
+            out.stdout()
+        };
+        write!(stream, "{}", err.render())?;
+    }
+    Ok(err.exit_code())
+}
+
+fn dispatch_builtin(
+    ctx: &types::ProjectContext,
+    overrides: &resolver::ResolutionOverrides,
+    command: args::Command,
+    schema_version: Option<u32>,
+    out: &mut render::out::Out<'_>,
+    sink: commands::WarningSink<'_>,
+) -> Result<i32> {
+    if overrides.dry_run {
+        render::explain::print_explain(
+            overrides,
+            &format!(
+                "builtin: {command:?}; execution: in-process; cwd: {}",
+                ctx.cwd.display()
+            ),
+        );
+        if !matches!(
+            command,
+            args::Command::Install { .. } | args::Command::Clean { .. }
+        ) {
+            return Ok(0);
+        }
+    }
+    match command {
+        args::Command::Install { tasks, mode, .. }
+            if matches!(out, render::out::Out::Stdio(..)) =>
+        {
+            dispatch_install(ctx, overrides, mode, &tasks)
+        }
+        args::Command::Clean {
+            yes,
+            include_framework,
+        } => {
+            commands::clean(ctx, overrides, yes, include_framework, out)?;
+            Ok(0)
+        }
+        args::Command::List { raw, json, only } => {
+            schema_version_for_json(json, schema_version)?;
+            commands::list(ctx, overrides, raw, json, &only, out, sink)?;
+            Ok(0)
+        }
+        args::Command::Info { json } => {
+            if overrides.shows_warnings() {
+                writeln!(
+                    out.stderr(),
+                    "{} `runner info` is deprecated; use `runner list`",
+                    "warn:".yellow().bold()
+                )?;
+                if actions_rs::env::is_github_actions() {
+                    actions_rs::Annotation::new()
+                        .title("Deprecation")
+                        .command(
+                            actions_rs::AnnotationKind::Warning,
+                            "`runner info` is deprecated; use `runner list`",
+                        )
+                        .issue_to(out.stderr())?;
+                }
+            }
+            schema_version_for_json(json, schema_version)?;
+            commands::list(ctx, overrides, false, json, &[], out, sink)?;
+            Ok(0)
+        }
+        args::Command::Completions { shell, output } => {
+            commands::completions(shell, output.as_deref(), out)?;
+            Ok(0)
+        }
+        args::Command::Install { .. } => bail!("install items cannot run in parallel chains"),
+        _ => bail!("expected a builtin command"),
+    }
+}
+
+/// Validate `--schema-version=N` for schema-aware (`--json`) output.
+fn schema_version_for_json(json: bool, requested: Option<u32>) -> Result<u32> {
+    if json {
+        schema::validate_schema_version(requested.unwrap_or(schema::SCHEMA_VERSION))
+    } else {
+        Ok(schema::SCHEMA_VERSION)
+    }
+}
+
+/// The project config, or for `config` and `doctor` a warning in its place
+/// when it fails to load.
+fn load_config(
+    dir: &Path,
+    command: Option<&args::Command>,
+) -> Result<(Option<config::LoadedConfig>, Vec<types::DetectionWarning>)> {
+    match config::load(dir) {
+        Ok(loaded) => Ok((loaded, Vec::new())),
+        Err(_) if matches!(command, Some(args::Command::Config { .. })) => Ok((None, Vec::new())),
+        Err(error) if matches!(command, Some(args::Command::Doctor { .. })) => Ok((
+            None,
+            vec![types::DetectionWarning::InvalidConfigValue {
+                key: config::KeyPath::default(),
+                raw: String::new(),
+                message: format!("{error:#}"),
+            }],
+        )),
+        Err(error) => Err(error),
+    }
+}
+
+fn dispatch(
+    cli: args::Cli,
+    origins: &invocation::Origins,
+    env_warnings: Vec<types::DetectionWarning>,
+    dir: &Path,
+) -> Result<i32> {
+    let anchored = detect::anchored(dir);
+    let config_dir = anchored.root.clone();
+    let (loaded_config, load_warnings) = load_config(&config_dir, cli.command.as_ref())?;
+    let settings = invocation::settings(&cli.global, cli.command.as_ref(), origins);
+    let (mut overrides, config_warnings) = match cli.command {
+        Some(args::Command::Doctor { .. }) => {
+            resolver::ResolutionOverrides::resolve_lenient(&settings, loaded_config.as_ref())
+        }
+        Some(args::Command::Config { .. }) => (
+            resolver::ResolutionOverrides::resolve_lenient(&settings, loaded_config.as_ref()).0,
+            Vec::new(),
+        ),
+        _ => (
+            resolver::ResolutionOverrides::resolve(&settings, loaded_config.as_ref())?,
+            Vec::new(),
+        ),
+    };
+    let mut ctx = detect::detect_anchored(dir, anchored, &overrides);
+    if let Some(loaded) = &loaded_config {
+        ctx.warnings.extend(loaded.warnings.iter().cloned());
+    }
+    ctx.warnings.extend(load_warnings);
+    ctx.warnings.extend(config_warnings);
+    ctx.warnings.extend(env_warnings);
+    overrides.parent.warned = commands::parent_warned_about(&ctx.root);
+
+    let result = match cli.command {
+        None => commands::info(&ctx, &overrides, false).map(|()| 0),
+        Some(
+            command @ (args::Command::Info { .. }
+            | args::Command::Install { .. }
+            | args::Command::Clean { .. }
+            | args::Command::List { .. }
+            | args::Command::Completions { .. }),
+        ) => dispatch_builtin(
+            &ctx,
+            &overrides,
+            command,
+            cli.global.schema_version,
+            &mut render::out::Out::stdio(),
+            None,
+        ),
+        Some(args::Command::Run {
+            task, args, mode, ..
+        }) => dispatch_run(&ctx, &overrides, task, args, mode),
+        Some(args::Command::External(args)) => {
+            if args.is_empty() {
+                commands::info(&ctx, &overrides, false)?;
+                Ok(0)
+            } else {
+                commands::run(&ctx, &overrides, &args[0], &args[1..], None)
+            }
+        }
+        #[cfg(feature = "man")]
+        Some(args::Command::Man { output }) => dispatch_man(output.as_deref()),
+        Some(args::Command::Schema { all, output }) => dispatch_schema(all, output.as_deref()),
+        #[cfg(feature = "lsp")]
+        Some(args::Command::Lsp) => commands::lsp::run(),
+        Some(args::Command::Doctor { json }) => {
+            schema_version_for_json(json, cli.global.schema_version)?;
+            commands::doctor(&ctx, &overrides, json)?;
+            Ok(0)
+        }
+        Some(args::Command::Config { action }) => commands::config(&config_dir, action),
+        Some(args::Command::Why { task, json }) => {
+            schema_version_for_json(json, cli.global.schema_version)?;
+            commands::why(&ctx, &overrides, &task, json)?;
+            Ok(0)
+        }
+    };
+    apply_fatal_output_policy(result, &overrides)
+}
+
+fn apply_fatal_output_policy(
+    result: Result<i32>,
+    overrides: &resolver::ResolutionOverrides,
+) -> Result<i32> {
+    if overrides.shows_fatal_errors() {
+        return result;
+    }
+    result.map_err(|error| {
+        let exit_code = exit_code_for_error(&error);
+        anyhow::Error::new(FatalOutputSuppressed { error, exit_code })
+    })
+}
+
+#[cfg(feature = "man")]
+fn dispatch_man(output: Option<&Path>) -> Result<i32> {
+    match output {
+        Some(dir) => commands::write_man_pages(dir)?,
+        None => commands::write_runner_page_to_stdout()?,
+    }
+    Ok(0)
+}
+
+fn dispatch_schema(all: bool, output: Option<&Path>) -> Result<i32> {
+    commands::write_schema(all, output)?;
+    Ok(0)
+}
+
+/// Whether the detected project defines a task with the given name.
+#[cfg(test)]
+fn has_task(ctx: &types::ProjectContext, name: &str) -> bool {
+    ctx.tasks.iter().any(|task| task.name == name)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsString;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    use super::{
+        BUILD_CHANNEL, BUILD_DIRTY, VERSION, bin_name_from_arg0, exit_code_for_error,
+        expand_tilde_with, has_task, release_url, requests_version, resolve_project_dir,
+        revision_version, run_alias_in_dir, run_in_dir, version_line, version_output,
+        version_request,
+    };
+
+    fn parse_cli<I, T>(args: I) -> Result<args::Cli, clap::Error>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<OsString> + Clone,
+    {
+        super::parse_cli(args).map(|parsed| parsed.cli)
+    }
+
+    fn parse_run_alias_cli<I, T>(args: I) -> Result<args::RunAliasCli, clap::Error>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<OsString> + Clone,
+    {
+        super::parse_run_alias_cli(args).map(|parsed| parsed.cli)
+    }
+    use crate::args;
+    use crate::resolver::ResolveError;
+    use crate::tool::test_support::TempDir;
+    use crate::types::{ProjectContext, Task};
+    use runner_core::ProviderId;
+
+    fn parsed_version(args: &[&str]) -> super::VersionRequest {
+        let parsed = parse_cli(args.iter().copied()).expect("valid CLI arguments");
+        version_request(&parsed.version, parsed.global.quiet).expect("version request")
+    }
+
+    #[test]
+    fn exit_code_for_resolve_error_is_two() {
+        let err: anyhow::Error = ResolveError::NoInstallers.into();
+
+        assert_eq!(exit_code_for_error(&err), 2);
+    }
+
+    #[test]
+    fn exit_code_for_generic_error_is_one() {
+        let err = anyhow::anyhow!("generic boom");
+
+        assert_eq!(exit_code_for_error(&err), 1);
+    }
+
+    #[test]
+    fn help_returns_zero_instead_of_exiting() {
+        let code = run_in_dir(["runner", "--help"], Path::new("."))
+            .expect("help should return an exit code");
+
+        assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn invalid_args_return_non_zero_instead_of_exiting() {
+        let code = run_in_dir(["runner", "--definitely-invalid"], Path::new("."))
+            .expect("parse errors should return an exit code");
+
+        assert_ne!(code, 0);
+    }
+
+    #[test]
+    fn version_returns_zero_instead_of_exiting() {
+        let code = run_in_dir(["runner", "--version"], Path::new("."))
+            .expect("version should return an exit code");
+
+        assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn version_request_preserves_mappings_and_accepts_global_options() {
+        for flag in ["-v", "-V"] {
+            assert!(matches!(
+                parsed_version(&["runner", flag]),
+                super::VersionRequest {
+                    kind: super::VersionKind::Short,
+                    json: false,
+                },
+            ));
+        }
+        for flag in ["--version", "--build-options"] {
+            assert!(matches!(
+                parsed_version(&["runner", flag]),
+                super::VersionRequest {
+                    kind: super::VersionKind::Detailed,
+                    json: false,
+                },
+            ));
+        }
+        assert!(matches!(
+            parsed_version(&["runner", "--revision"]),
+            super::VersionRequest {
+                kind: super::VersionKind::Revision,
+                json: false,
+            },
+        ));
+        assert!(!requests_version(&[
+            OsString::from("runner"),
+            OsString::from("info"),
+            OsString::from("--version"),
+        ]));
+        assert!(matches!(
+            parsed_version(&["run", "--pm", "npm", "--version"]),
+            super::VersionRequest {
+                kind: super::VersionKind::Detailed,
+                json: false,
+            },
+        ));
+        assert!(!requests_version(&[
+            OsString::from("run"),
+            OsString::from("--bogus"),
+            OsString::from("--version"),
+        ]));
+    }
+
+    #[test]
+    fn release_url_points_to_version_tag() {
+        assert_eq!(
+            release_url(VERSION),
+            format!("https://github.com/kjanat/runner/releases/tag/v{VERSION}")
+        );
+    }
+
+    #[test]
+    fn version_line_wraps_bin_and_version_with_separate_links() {
+        let line = version_line(&[OsString::from("runner")], true);
+
+        assert!(line.contains(
+            "\u{1b}]8;;https://github.com/kjanat/runner\u{1b}\\runner\u{1b}]8;;\u{1b}\\"
+        ));
+        assert!(line.contains(&format!(
+            "\u{1b}]8;;https://github.com/kjanat/runner/releases/tag/v{VERSION}\u{1b}\\{VERSION}\u{1b}]8;;\u{1b}\\"
+        )));
+    }
+
+    #[test]
+    fn detailed_version_identifies_the_build() {
+        let output = version_output(
+            &[OsString::from("runner")],
+            super::VersionRequest {
+                kind: super::VersionKind::Detailed,
+                json: false,
+            },
+            false,
+        );
+
+        assert!(output.starts_with(&format!("runner {VERSION}\n")));
+        for label in [
+            "channel: ",
+            "revision: ",
+            "target: ",
+            "profile: ",
+            "rustc: ",
+        ] {
+            assert!(output.contains(label), "missing {label:?} in {output:?}");
+        }
+    }
+
+    #[test]
+    fn revision_version_uses_bun_style_separator() {
+        assert_eq!(
+            version_output(
+                &[OsString::from("run")],
+                super::VersionRequest {
+                    kind: super::VersionKind::Revision,
+                    json: false,
+                },
+                false,
+            ),
+            format!("run {}", revision_version()),
+        );
+    }
+
+    #[test]
+    fn quiet_makes_every_version_selector_concise() {
+        for selector in ["--version", "--build-options", "--revision"] {
+            let args = [
+                OsString::from("run"),
+                OsString::from(selector),
+                OsString::from("-q"),
+            ];
+            let parsed = parse_cli(args.clone()).expect("valid version arguments");
+            let request =
+                version_request(&parsed.version, parsed.global.quiet).expect("version request");
+            assert_eq!(request.kind, super::VersionKind::Short);
+            assert_eq!(
+                version_output(&args, request, false),
+                format!("run {VERSION}")
+            );
+        }
+    }
+
+    #[test]
+    fn detailed_version_json_is_structured_and_names_the_binary() {
+        let args = [
+            OsString::from("runner"),
+            OsString::from("--version"),
+            OsString::from("--json"),
+        ];
+        let parsed = parse_cli(args.clone()).expect("valid version arguments");
+        let request =
+            version_request(&parsed.version, parsed.global.quiet).expect("version request");
+        let output = version_output(&args, request, false);
+        let value: serde_json::Value = serde_json::from_str(&output).expect("valid JSON");
+
+        assert_eq!(value["schema_version"], 1);
+        assert_eq!(value["program"], "runner");
+        assert_eq!(value["version"], VERSION);
+        assert!(value["target_config"]["features"].is_array());
+    }
+
+    #[test]
+    fn revision_version_marks_development_and_dirty_builds() {
+        let output = revision_version();
+
+        if BUILD_CHANNEL == "stable" {
+            assert!(!output.contains("-dev."));
+        } else {
+            assert!(output.contains(&format!("-{BUILD_CHANNEL}")));
+        }
+        assert_eq!(output.contains(".dirty"), BUILD_DIRTY);
+    }
+
+    #[test]
+    fn resolve_project_dir_uses_cwd_when_not_overridden() {
+        let cwd = TempDir::new("runner-project-dir-default");
+
+        assert_eq!(
+            resolve_project_dir(None, cwd.path()).expect("cwd should be accepted"),
+            cwd.path()
+        );
+    }
+
+    #[test]
+    fn resolve_project_dir_resolves_relative_paths_from_cwd() {
+        let cwd = TempDir::new("runner-project-dir-cwd");
+        fs::create_dir(cwd.path().join("child")).expect("child dir should be created");
+
+        let resolved = resolve_project_dir(Some(Path::new("child")), cwd.path())
+            .expect("relative dir should resolve");
+
+        assert_eq!(resolved, cwd.path().join("child"));
+    }
+
+    #[test]
+    fn resolve_project_dir_rejects_missing_directories() {
+        let cwd = TempDir::new("runner-project-dir-missing");
+        let err = resolve_project_dir(Some(Path::new("missing")), cwd.path())
+            .expect_err("missing dir should error");
+
+        assert!(err.to_string().contains("project dir does not exist"));
+    }
+
+    #[test]
+    fn expand_tilde_expands_leading_tilde_slash() {
+        let home = Path::new("/home/example");
+        assert_eq!(
+            expand_tilde_with(Path::new("~/projects/recipe"), Some(home)),
+            home.join("projects/recipe"),
+        );
+    }
+
+    #[test]
+    fn expand_tilde_expands_bare_tilde() {
+        let home = Path::new("/home/example");
+        assert_eq!(expand_tilde_with(Path::new("~"), Some(home)), home);
+    }
+
+    #[test]
+    fn expand_tilde_leaves_other_paths_untouched() {
+        let home = Path::new("/home/example");
+        for raw in ["/abs/path", "relative/path", "~user/projects", "./~/foo"] {
+            assert_eq!(
+                expand_tilde_with(Path::new(raw), Some(home)),
+                PathBuf::from(raw),
+                "path {raw} should be unchanged",
+            );
+        }
+    }
+
+    #[test]
+    fn expand_tilde_without_home_is_noop() {
+        assert_eq!(
+            expand_tilde_with(Path::new("~/projects"), None),
+            PathBuf::from("~/projects"),
+        );
+    }
+
+    #[test]
+    fn resolve_project_dir_does_not_join_tilde_onto_cwd() {
+        // Regression: `--dir=~/foo` arrives unexpanded, and previously the
+        // tilde path was treated as relative and joined onto the cwd, yielding
+        // a bogus `<cwd>/~/foo`. The cwd exists but `<cwd>/~/foo` must not, so
+        // a non-expanding implementation would fail with a path containing the
+        // literal tilde segment.
+        let home_var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+        if std::env::var_os(home_var).is_none_or(|v| v.is_empty()) {
+            // Without a home directory there is nothing to expand to; the pure
+            // `expand_tilde_with` tests cover the no-home path instead.
+            return;
+        }
+
+        let cwd = TempDir::new("runner-project-dir-tilde");
+        let err = resolve_project_dir(Some(Path::new("~/definitely-missing")), cwd.path())
+            .expect_err("tilde dir should not resolve against cwd");
+
+        let message = err.to_string();
+        assert!(message.contains("project dir does not exist"));
+        // Use `join` rather than a hardcoded `/` so the guard is
+        // path-separator agnostic (e.g. `\` on Windows).
+        let joined_tilde = cwd.path().join("~");
+        assert!(
+            !message.contains(&joined_tilde.display().to_string()),
+            "tilde must not be joined onto cwd: {message}",
+        );
+    }
+
+    #[test]
+    fn bin_name_from_arg0_uses_path_file_name() {
+        let name = bin_name_from_arg0(&OsString::from("/tmp/run"));
+
+        assert_eq!(name.as_deref(), Some("run"));
+    }
+
+    #[test]
+    fn bin_name_from_arg0_strips_windows_exe_suffix() {
+        // Windows builds inherit `runner.exe` / `run.exe` from argv[0]; clap
+        // pipes that straight into `--version` / `--help` / Usage unless we
+        // normalize it here. We feed bare file names rather than full Windows
+        // paths because `Path::file_name` is host-OS-aware and won't split on
+        // `\` when the tests run on Unix.
+        let runner = bin_name_from_arg0(&OsString::from("runner.exe"));
+        assert_eq!(runner.as_deref(), Some("runner"));
+
+        let run = bin_name_from_arg0(&OsString::from("run.exe"));
+        assert_eq!(run.as_deref(), Some("run"));
+    }
+
+    #[test]
+    fn bin_name_from_arg0_strips_exe_case_insensitive() {
+        let upper = bin_name_from_arg0(&OsString::from("RUNNER.EXE"));
+        assert_eq!(upper.as_deref(), Some("RUNNER"));
+
+        let mixed = bin_name_from_arg0(&OsString::from("Run.Exe"));
+        assert_eq!(mixed.as_deref(), Some("Run"));
+    }
+
+    #[test]
+    fn bin_name_from_arg0_preserves_unrelated_extensions() {
+        // `.exe` only, names that happen to embed those characters in other
+        // positions, or carry different extensions, pass through unchanged.
+        let dotted = bin_name_from_arg0(&OsString::from("/tmp/runner.exe.bak"));
+        assert_eq!(dotted.as_deref(), Some("runner.exe.bak"));
+
+        let other = bin_name_from_arg0(&OsString::from("/tmp/runner.sh"));
+        assert_eq!(other.as_deref(), Some("runner.sh"));
+    }
+
+    #[test]
+    fn bin_name_from_arg0_handles_bare_dot_exe() {
+        // `.exe` alone shouldn't strip to an empty name; the suffix length
+        // guard keeps the input intact.
+        let bare = bin_name_from_arg0(&OsString::from(".exe"));
+        assert_eq!(bare.as_deref(), Some(".exe"));
+    }
+
+    fn stub_context(tasks: &[&str]) -> ProjectContext {
+        ProjectContext {
+            cwd: PathBuf::from("."),
+            root: PathBuf::from("."),
+            tasks: tasks
+                .iter()
+                .map(|name| Task {
+                    name: (*name).to_string(),
+                    source: ProviderId::PackageJson,
+                    run_target: None,
+                    description: None,
+                    alias_of: None,
+                    passthrough_to: None,
+                    detail: crate::types::TaskDetail::default(),
+                    member: None,
+                })
+                .collect(),
+            workspace: None,
+            warnings: Vec::new(),
+            project: Ok(runner_core::Project::default()),
+        }
+    }
+
+    #[test]
+    fn has_task_returns_true_for_existing_task() {
+        let ctx = stub_context(&["clean", "install"]);
+
+        assert!(has_task(&ctx, "clean"));
+        assert!(has_task(&ctx, "install"));
+        assert!(!has_task(&ctx, "build"));
+    }
+
+    #[test]
+    fn run_alias_parses_builtin_names_as_tasks() {
+        for name in [
+            "clean",
+            "install",
+            "list",
+            "exec",
+            "info",
+            "completions",
+            "run",
+        ] {
+            let cli = parse_run_alias_cli(["run", name])
+                .unwrap_or_else(|e| panic!("run {name} should parse: {e}"));
+
+            assert_eq!(cli.task.as_deref(), Some(name));
+            assert_eq!(cli.args.len(), 0);
+        }
+    }
+
+    #[test]
+    fn run_alias_forwards_trailing_args() {
+        let cli = parse_run_alias_cli(["run", "test", "--watch", "--reporter=verbose"])
+            .expect("run test --watch --reporter=verbose should parse");
+
+        assert_eq!(cli.task.as_deref(), Some("test"));
+        assert_eq!(cli.args, vec!["--watch", "--reporter=verbose"]);
+    }
+
+    #[test]
+    fn run_alias_bare_has_no_task() {
+        let cli = parse_run_alias_cli(["run"]).expect("bare run should parse");
+
+        assert!(cli.task.is_none());
+        assert_eq!(cli.args.len(), 0);
+    }
+
+    #[test]
+    fn run_alias_honours_dir_flag() {
+        let cli = parse_run_alias_cli(["run", "--dir=other", "build"])
+            .expect("run --dir=other build should parse");
+
+        assert_eq!(cli.global.project_dir, Some(PathBuf::from("other")));
+        assert_eq!(cli.task.as_deref(), Some("build"));
+    }
+
+    #[test]
+    fn run_alias_bare_shows_info() {
+        let dir = TempDir::new("runner-run-bare");
+
+        let code =
+            run_alias_in_dir(["run"], dir.path()).expect("bare run should succeed on empty dir");
+
+        assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn run_alias_dispatch_shares_override_building_with_runner() {
+        let dir = TempDir::new("runner-run-alias-bad-pm");
+        let code = run_alias_in_dir(["run", "--pm", "zoot", "build"], dir.path())
+            .expect("a usage error is an exit code");
+        assert_eq!(code, 2);
+    }
+
+    #[test]
+    fn run_alias_bare_matches_bare_runner_dashboard() {
+        // A bare `run` maps to `command: None`, the same project-dashboard
+        // path bare `runner` takes; both succeed identically on an empty
+        // directory.
+        let dir = TempDir::new("runner-run-alias-bare-eq");
+        let alias = run_alias_in_dir(["run"], dir.path()).expect("bare run should succeed");
+        let runner = run_in_dir(["runner"], dir.path()).expect("bare runner should succeed");
+        assert_eq!(alias, runner, "alias bare dispatch must match bare runner");
+        assert_eq!(alias, 0);
+    }
+
+    #[test]
+    fn run_alias_bare_drops_chain_failure_flag() {
+        // A bare `run -k` (chain-failure flag, no task, no `-s`/`-p`) is
+        // classified bare -> `command: None`, so the inert chain-failure
+        // flag is dropped before override building. With an opposite-polarity
+        // `[chain].kill_on_fail = true` in config, the old eager builder kept
+        // the CLI `-k` and resolve_failure_policy hit the cross-source
+        // (keep+kill) conflict, erroring out. Dropping the flag avoids that:
+        // the dashboard never reads the failure policy, so a clean exit 0 is
+        // the correct outcome. Config-driven (not env) to stay parallel-safe.
+        let dir = TempDir::new("runner-run-alias-bare-drop-flag");
+        fs::write(
+            dir.path().join(crate::config::CONFIG_FILENAME),
+            "[chain]\nkill_on_fail = true\n",
+        )
+        .expect("write runner.toml");
+
+        let code = run_alias_in_dir(["run", "-k"], dir.path())
+            .expect("bare `run -k` must not error on an opposite-polarity [chain] config");
+        assert_eq!(code, 0, "bare dashboard ignores the dropped failure flag");
+    }
+
+    #[test]
+    fn run_alias_forwards_help_and_version_after_task() {
+        // `run <task> --help/--version` must reach the task, not print
+        // run's own help/version. The flag is an undefined hyphen token
+        // after the first positional, so `args` (trailing_var_arg) keeps it.
+        for flag in ["--help", "-h", "--version", "-V"] {
+            let cli = parse_run_alias_cli(["run", "build", flag])
+                .unwrap_or_else(|e| panic!("run build {flag} should parse: {e}"));
+            assert_eq!(cli.task.as_deref(), Some("build"));
+            assert_eq!(cli.args, vec![flag.to_string()]);
+        }
+    }
+
+    #[test]
+    fn run_alias_forwards_interleaved_help_flag() {
+        // A forwarded help flag keeps its position among the task's args.
+        let cli = parse_run_alias_cli(["run", "build", "--foo", "--help", "--bar"])
+            .expect("interleaved --help should parse and forward");
+        assert_eq!(cli.task.as_deref(), Some("build"));
+        assert_eq!(cli.args, vec!["--foo", "--help", "--bar"]);
+    }
+
+    #[test]
+    fn run_alias_double_dash_forwards_help_literally() {
+        // `run <task> -- --help` keeps forwarding the literal flag (the `--`
+        // separator itself is consumed by clap).
+        let cli = parse_run_alias_cli(["run", "build", "--", "--help"])
+            .expect("run build -- --help should parse");
+        assert_eq!(cli.task.as_deref(), Some("build"));
+        assert_eq!(cli.args, vec!["--help"]);
+    }
+
+    #[test]
+    fn run_alias_leading_help_is_clap_owned_and_versions_parse() {
+        for flag in ["--help", "-h"] {
+            let err = parse_run_alias_cli(["run", flag])
+                .expect_err("leading help should return clap's display-help flow");
+            assert_eq!(err.kind(), clap::error::ErrorKind::DisplayHelp);
+        }
+        for (flag, kind) in [
+            ("--version", super::VersionKind::Detailed),
+            ("-V", super::VersionKind::Short),
+        ] {
+            let parsed = parse_run_alias_cli(["run", flag]).expect("version selector parses");
+            let request =
+                version_request(&parsed.version, parsed.global.quiet).expect("version request");
+            assert_eq!(request.kind, kind);
+        }
+    }
+
+    #[test]
+    fn run_alias_global_flag_before_help_still_displays_help() {
+        let err = parse_run_alias_cli(["run", "--pm", "npm", "--help"])
+            .expect_err("clap returns help as a display error");
+        assert_eq!(err.kind(), clap::error::ErrorKind::DisplayHelp);
+    }
+
+    #[test]
+    fn run_alias_unknown_flag_remains_an_error() {
+        let err = parse_run_alias_cli(["run", "--bogus"])
+            .expect_err("unknown leading flag should not parse");
+        assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
+    }
+
+    #[test]
+    fn run_alias_own_help_and_version_return_zero() {
+        // End-to-end through dispatch: own help/version exit 0 without
+        // needing a real project.
+        let dir = TempDir::new("runner-run-builtin");
+        assert_eq!(
+            run_alias_in_dir(["run", "--help"], dir.path()).expect("run --help should succeed"),
+            0,
+        );
+        assert_eq!(
+            run_alias_in_dir(["run", "--pm", "npm", "--version"], dir.path())
+                .expect("run --pm npm --version should succeed"),
+            0,
+        );
+    }
+
+    #[test]
+    fn runner_cli_still_parses_install_as_builtin_when_flag_set() {
+        let cli = parse_cli(["runner", "install", "--frozen"]).expect("should parse");
+
+        match cli.command {
+            Some(args::Command::Install { frozen: true, .. }) => {}
+            other => panic!("expected Install {{ frozen: true }}, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn runner_cli_parses_install_frozen_short_flag() {
+        let cli = parse_cli(["runner", "install", "-f"]).expect("should parse");
+
+        match cli.command {
+            Some(args::Command::Install { frozen: true, .. }) => {}
+            other => panic!("expected Install {{ frozen: true }}, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn runner_cli_parses_install_chain_flags_after_task_names() {
+        // `runner install build test --kill-on-fail` must parse
+        // `--kill-on-fail` as a chain-failure flag, not as a task name.
+        // Regression for the `trailing_var_arg` consumption bug.
+        let cli = parse_cli(["runner", "install", "build", "test", "-K"]).expect("parses");
+        assert!(cli.global.failure.kill_on_fail);
+        match cli.command {
+            Some(args::Command::Install { tasks, .. }) => {
+                assert_eq!(tasks, vec!["build".to_string(), "test".to_string()]);
+            }
+            other => panic!("expected Install with a clean task list, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn runner_cli_parses_clean_as_builtin_when_flag_set() {
+        let cli = parse_cli(["runner", "clean", "-y"]).expect("should parse");
+
+        match cli.command {
+            Some(args::Command::Clean { yes: true, .. }) => {}
+            other => panic!("expected Clean {{ yes: true, .. }}, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn runner_cli_routes_unknown_name_to_external() {
+        let cli = parse_cli(["runner", "no-such-builtin"]).expect("should parse");
+
+        match cli.command {
+            Some(args::Command::External(args)) => {
+                assert_eq!(args, vec!["no-such-builtin"]);
+            }
+            other => panic!("expected External, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn runner_cli_parses_pm_and_source_overrides_globally() {
+        let cli = parse_cli(["runner", "--pm", "pnpm", "--source", "just", "run", "build"])
+            .expect("global --pm/--source should parse on the run subcommand");
+
+        assert_eq!(cli.global.pm, Some(ProviderId::Pnpm));
+        assert_eq!(cli.global.source, Some(ProviderId::Just));
+        match cli.command {
+            Some(args::Command::Run { task, args, .. }) => {
+                assert_eq!(task.as_deref(), Some("build"));
+                assert_eq!(args.len(), 0);
+            }
+            other => panic!("expected Run, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn run_alias_parses_pm_override() {
+        let cli =
+            parse_run_alias_cli(["run", "--pm=bun", "test"]).expect("--pm=bun test should parse");
+
+        assert_eq!(cli.global.pm, Some(ProviderId::Bun));
+        assert_eq!(cli.task.as_deref(), Some("test"));
+    }
+
+    #[test]
+    fn invalid_pm_override_value_returns_error() {
+        let dir = TempDir::new("runner-bad-pm");
+        let code = run_in_dir(["runner", "--pm", "zoot", "info"], dir.path())
+            .expect("a usage error is an exit code");
+        assert_eq!(code, 2);
+    }
+
+    #[test]
+    fn install_with_undetected_pm_override_exits_2() {
+        // A cargo-only project with `--pm npm`: the override can't be
+        // honored, so install must refuse with a ResolveError (exit 2)
+        // before spawning anything.
+        let dir = TempDir::new("runner-install-undetected-pm");
+        fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\nversion = \"0.0.0\"\n",
+        )
+        .expect("write Cargo.toml");
+
+        let err = run_in_dir(["runner", "--pm", "npm", "install"], dir.path())
+            .expect_err("undetected --pm should refuse the install");
+
+        assert_eq!(
+            exit_code_for_error(&err),
+            2,
+            "ResolveError must map to exit 2"
+        );
+        let msg = format!("{err}");
+        assert!(msg.contains("--pm"), "should name the source: {msg}");
+        assert!(msg.contains("cargo"), "should list detected PMs: {msg}");
+    }
+
+    #[test]
+    fn install_chain_with_undetected_pm_override_exits_2() {
+        // Same refusal through the chain path (`runner install <task>`).
+        let dir = TempDir::new("runner-install-chain-undetected-pm");
+        fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\nversion = \"0.0.0\"\n",
+        )
+        .expect("write Cargo.toml");
+
+        let err = run_in_dir(["runner", "--pm", "npm", "install", "build"], dir.path())
+            .expect_err("undetected --pm should refuse the install chain");
+
+        assert_eq!(
+            exit_code_for_error(&err),
+            2,
+            "ResolveError must map to exit 2"
+        );
+    }
+
+    #[test]
+    fn schema_version_rejects_invalid_for_non_json_commands() {
+        let dir = TempDir::new("runner-schema-invalid-completions");
+
+        let code = run_in_dir(
+            ["runner", "--schema-version", "99", "completions", "bash"],
+            dir.path(),
+        )
+        .expect("parse errors should return an exit code");
+
+        assert_ne!(code, 0);
+    }
+
+    #[test]
+    fn schema_version_rejects_invalid_for_run_alias_bare_info() {
+        let dir = TempDir::new("runner-schema-invalid-run-alias");
+
+        let code = run_alias_in_dir(["run", "--schema-version", "99"], dir.path())
+            .expect("parse errors should return an exit code");
+
+        assert_ne!(code, 0);
+    }
+
+    #[test]
+    fn schema_version_rejects_invalid_for_json_output() {
+        let dir = TempDir::new("runner-schema-json-invalid");
+
+        let code = run_in_dir(
+            ["runner", "--schema-version", "99", "info", "--json"],
+            dir.path(),
+        )
+        .expect("parse errors should return an exit code");
+
+        assert_ne!(code, 0);
+    }
+
+    #[test]
+    fn runner_cli_parses_completions_output_long() {
+        let cli = parse_cli(["runner", "completions", "--output", "/tmp/runner.zsh"])
+            .expect("should parse");
+
+        match cli.command {
+            Some(args::Command::Completions {
+                shell: None,
+                output: Some(path),
+            }) => assert_eq!(path, PathBuf::from("/tmp/runner.zsh")),
+            other => panic!("expected Completions with --output long form, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn runner_cli_parses_completions_output_short() {
+        let cli =
+            parse_cli(["runner", "completions", "-o", "/tmp/runner.zsh"]).expect("should parse");
+
+        match cli.command {
+            Some(args::Command::Completions {
+                shell: None,
+                output: Some(path),
+            }) => assert_eq!(path, PathBuf::from("/tmp/runner.zsh")),
+            other => panic!("expected Completions with -o short form, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn runner_cli_parses_completions_shell_and_output() {
+        let cli = parse_cli([
+            "runner",
+            "completions",
+            "zsh",
+            "--output",
+            "/tmp/runner.zsh",
+        ])
+        .expect("should parse");
+
+        match cli.command {
+            Some(args::Command::Completions {
+                shell: Some(_),
+                output: Some(path),
+            }) => assert_eq!(path, PathBuf::from("/tmp/runner.zsh")),
+            other => panic!("expected Completions with both shell and output set, got {other:?}"),
+        }
+    }
+}
