@@ -12,23 +12,29 @@ on:
 
 env:
   RELEASE_TAG: ${{ inputs.tag }}
-  INPUT_DRY_RUN: ${{ inputs.dry-run || 'false' }}
   CARGO_TERM_COLOR: always
 
 permissions: {}
 
+concurrency: { group: "crates-release-${{ inputs.tag }}", cancel-in-progress: false }
+
 jobs:
-  publish:
-    name: publish to crates.io
+  setup:
+    name: verify crates
     if: github.repository == 'kjanat/runner'
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    permissions: { contents: read, id-token: write, actions: read }
-    environment: { name: crates-io, url: "${{ steps.verify.outputs.url }}" }
-    env: { HAS_CARGO_REGISTRY_TOKEN: "${{ case(secrets.CARGO_REGISTRY_TOKEN != '', 'true', 'false') }}" }
+    permissions: { contents: read, actions: read }
+    outputs:
+      version: ${{ steps.verify.outputs.version }}
+      man-crate: ${{ steps.verify.outputs.name }}
+      man-dir: ${{ steps.verify.outputs.man_dir }}
+      crates: ${{ steps.order.outputs.crates }}
     steps:
       - uses: actions/checkout@v7
         with: { ref: "refs/tags/${{ env.RELEASE_TAG }}", persist-credentials: false }
+      - uses: actions/checkout@v7
+        with: { ref: "${{ github.event.repository.default_branch }}", persist-credentials: false, path: helpers, sparse-checkout: .github/scripts }
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: verify tag matches Cargo.toml version
@@ -46,31 +52,75 @@ jobs:
             exit 1
           fi
           echo "ok: tag ${RELEASE_TAG} matches ${manifest_path} version ${manifest_version}"
-          echo "url=https://crates.io/crates/${name}/${manifest_version}" >> "${GITHUB_OUTPUT}"
-          echo "man_dir=$(dirname "${manifest_path}")/man"                >> "${GITHUB_ENV}"
+          {
+            echo "name=${name}"
+            echo "version=${manifest_version}"
+            echo "man_dir=$(dirname "${manifest_path}")/man"
+          } >> "${GITHUB_OUTPUT}"
 
       - name: download man pages
         if: inputs.run-id != ''
         uses: actions/download-artifact@v8
         with:
           name: man-pages
-          path: ${{ env.man_dir }}
+          path: ${{ steps.verify.outputs.man_dir }}
           run-id: ${{ inputs.run-id }}
           github-token: ${{ github.token }}
 
       - name: build man pages
         if: inputs.run-id == ''
-        run: cargo man --output "${man_dir}"
+        env: { MAN_DIR: "${{ steps.verify.outputs.man_dir }}" }
+        run: cargo man --output "${MAN_DIR}"
 
       - run: cargo dirtypub --dry-run
 
+      - id: order
+        run: bash helpers/.github/scripts/crates.sh order
+
+  publish:
+    name: publish ${{ matrix.crate }}
+    needs: setup
+    if: inputs.dry-run != true
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions: { contents: read, id-token: write, actions: read }
+    environment: { name: crates-io, url: "https://crates.io/crates/${{ matrix.crate }}/${{ needs.setup.outputs.version }}" }
+    strategy: { max-parallel: 1, fail-fast: true, matrix: { crate: "${{ fromJSON(needs.setup.outputs.crates) }}" } }
+    env: { CRATE: "${{ matrix.crate }}", VERSION: "${{ needs.setup.outputs.version }}" }
+    steps:
+      - uses: actions/checkout@v7
+        with: { ref: "refs/tags/${{ env.RELEASE_TAG }}", persist-credentials: false }
+      - uses: actions/checkout@v7
+        with: { ref: "${{ github.event.repository.default_branch }}", persist-credentials: false, path: helpers, sparse-checkout: .github/scripts }
+
+      - id: state
+        run: bash helpers/.github/scripts/crates.sh state "${CRATE}" "${VERSION}"
+
+      - if: steps.state.outputs.published == 'false'
+        uses: dtolnay/rust-toolchain@stable
+      - if: steps.state.outputs.published == 'false'
+        uses: Swatinem/rust-cache@v2
+
+      - name: download man pages
+        if: steps.state.outputs.published == 'false' && matrix.crate == needs.setup.outputs.man-crate && inputs.run-id != ''
+        uses: actions/download-artifact@v8
+        with:
+          name: man-pages
+          path: ${{ needs.setup.outputs.man-dir }}
+          run-id: ${{ inputs.run-id }}
+          github-token: ${{ github.token }}
+
+      - name: build man pages
+        if: steps.state.outputs.published == 'false' && matrix.crate == needs.setup.outputs.man-crate && inputs.run-id == ''
+        env: { MAN_DIR: "${{ needs.setup.outputs.man-dir }}" }
+        run: cargo man --output "${MAN_DIR}"
+
       - name: mint crates.io token (trusted publishing)
+        if: steps.state.outputs.published == 'false' && steps.state.outputs.new == 'false'
         uses: rust-lang/crates-io-auth-action@v1
-        if: env.INPUT_DRY_RUN != 'true'
-        continue-on-error: ${{ env.HAS_CARGO_REGISTRY_TOKEN == 'true' }}
         id: auth
 
       - name: cargo publish
-        if: env.INPUT_DRY_RUN != 'true'
-        env: { CARGO_REGISTRY_TOKEN: "${{ secrets.CARGO_REGISTRY_TOKEN || steps.auth.outputs.token }}" }
-        run: cargo dirtypub
+        if: steps.state.outputs.published == 'false'
+        env: { CARGO_REGISTRY_TOKEN: "${{ case(steps.state.outputs.new == 'true', secrets.CARGO_REGISTRY_TOKEN, steps.auth.outputs.token) }}" }
+        run: bash helpers/.github/scripts/crates.sh publish "${CRATE}" "${VERSION}"
