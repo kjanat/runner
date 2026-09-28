@@ -1,0 +1,151 @@
+name: verify crate packages
+description: Build all packaged crates before publication and record the verified archives in dependency order.
+inputs:
+  source-dir: { description: Clean release source checkout, required: true }
+  proof-dir: { description: Directory for verified archives and report, required: true }
+  tag: { description: Release tag, required: true }
+  helper-sha: { description: Helper commit used for this release, required: true }
+outputs:
+  crates:
+    description: JSON array of crate entries in Cargo's dependency-first packaging order
+    value: ${{ steps.verify.outputs.crates }}
+  version:
+    description: The verified release version (tag without the v prefix)
+    value: ${{ steps.verify.outputs.version }}
+runs:
+  using: composite
+  steps:
+    - id: verify
+      shell: python
+      env:
+        SOURCE_DIR: ${{ inputs.source-dir }}
+        PROOF_DIR: ${{ inputs.proof-dir }}
+        RELEASE_TAG: ${{ inputs.tag }}
+        HELPER_SHA: ${{ inputs.helper-sha }}
+      run: |
+        import hashlib
+        import json
+        import os
+        from pathlib import Path
+        import re
+        import shutil
+        import subprocess
+        import sys
+        import tarfile
+
+
+        def run(args, source, *, stream=False):
+            if not stream:
+                return subprocess.check_output(args, cwd=source, text=True).strip()
+            lines = []
+            with subprocess.Popen(
+                args,
+                cwd=source,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                env={**os.environ, "CARGO_TERM_COLOR": "never"},
+            ) as process:
+                if process.stdout is None:
+                    raise OSError(f"{args[0]}: no stdout pipe")
+                for line in process.stdout:
+                    print(line, end="", flush=True)
+                    lines.append(line)
+                if process.wait():
+                    raise subprocess.CalledProcessError(process.returncode, args)
+            return "".join(lines)
+
+
+        def digest(path):
+            with path.open("rb") as file:
+                return hashlib.file_digest(file, "sha256").hexdigest()
+
+
+        def identity(source):
+            if Path(run(["git", "rev-parse", "--show-toplevel"], source)).resolve() != source:
+                raise ValueError("source-dir must be the release checkout root")
+            if run(["git", "status", "--porcelain=v1", "--untracked-files=all"], source):
+                raise ValueError("release source checkout must be clean")
+            return {
+                "source_sha": run(["git", "rev-parse", "HEAD"], source),
+                "lock_sha256": digest(source / "Cargo.lock"),
+                "cargo": run(["cargo", "--version"], source),
+                "rustc": run(["rustc", "--version"], source),
+            }
+
+
+        source = Path(os.environ["SOURCE_DIR"]).resolve()
+        output = Path(os.environ["PROOF_DIR"]).resolve()
+        tag = os.environ["RELEASE_TAG"]
+        helper_sha = os.environ["HELPER_SHA"]
+        if not re.fullmatch(r"[0-9a-f]{40}", helper_sha):
+            sys.exit("error: helper-sha must be a full commit SHA")
+
+        output.mkdir(parents=True, exist_ok=True)
+        report_path = output / "verification.json"
+        # A failed attempt must never leave an earlier success marker behind.
+        report_path.unlink(missing_ok=True)
+        before = identity(source)
+        data = json.loads(run(["cargo", "metadata", "--no-deps", "--locked", "--format-version", "1"], source))
+        members = set(data["workspace_members"])
+        packages = {
+            package["name"]: package["version"]
+            for package in data["packages"]
+            if package["id"] in members and (package["publish"] is None or "crates-io" in package["publish"])
+        }
+        version = tag.removeprefix("v")
+        if not tag.startswith("v") or not packages or set(packages.values()) != {version}:
+            sys.exit("error: release tag must match every publishable workspace package")
+        selection = ["--workspace"]
+        for package in data["packages"]:
+            if package["id"] in members and package["name"] not in packages:
+                selection.extend(["--exclude", package["name"]])
+        # runner-run packages its git-ignored generated man pages, which Cargo counts as dirty.
+        log = run(
+            ["cargo", "package", *selection, "--locked", "--all-features", "--allow-dirty", "--registry", "crates-io"],
+            source,
+            stream=True,
+        )
+        # Cargo packages dependencies first to populate its temporary registry.
+        order = re.findall(r"^\s*Packaging ([a-zA-Z0-9_-]+) v[^\s]+", log, re.MULTILINE)
+        if len(order) != len(packages) or set(order) != set(packages):
+            sys.exit("error: Cargo packaging did not include every publishable crate exactly once")
+        if identity(source) != before:
+            sys.exit("error: release inputs changed during package verification")
+
+        records = []
+        for name in order:
+            filename = f"{name}-{version}.crate"
+            archive = Path(data["target_directory"]) / "package" / filename
+            with tarfile.open(archive) as tar:
+                member = tar.extractfile(f"{name}-{version}/.cargo_vcs_info.json")
+                if member is None:
+                    sys.exit(f"error: {name}: packaged VCS information is missing")
+                if json.load(member)["git"].get("sha1") != before["source_sha"]:
+                    sys.exit(f"error: {name}: archive does not identify the verified source")
+            shutil.copyfile(archive, output / filename)
+            records.append({"crate": name, "version": version, "archive": filename, "sha256": digest(archive)})
+
+        report = {"schema": 1, "tag": tag, "helper_sha": helper_sha, **before, "crates": records}
+        report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+        with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output_file:
+            output_file.write(f"crates={json.dumps([{'crate': name} for name in order], separators=(',', ':'))}\n")
+            output_file.write(f"version={version}\n")
+        summary = [
+            "## Verified crate packages",
+            "",
+            f"Release: `{tag}`",
+            f"Source commit: `{before['source_sha']}`",
+            f"Helper commit: `{helper_sha}`",
+            f"Toolchain: `{before['cargo']}` / `{before['rustc']}`",
+            "",
+            "| Crate | Version | Archive SHA-256 |",
+            "| --- | --- | --- |",
+            *[f"| {r['crate']} | {version} | `{r['sha256']}` |" for r in records],
+            "",
+        ]
+        with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary_file:
+            summary_file.write("\n".join(summary))
+        print(f"Verified {len(records)} packaged crates; report: {report_path}")

@@ -4,7 +4,7 @@ import { readdir, rm } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { brotliCompressSync, constants as zlib, gzipSync } from "node:zlib";
 
-import cargo from "../Cargo.toml" with { type: "toml" };
+import cargo from "../crates/cli/Cargo.toml" with { type: "toml" };
 
 const root = import.meta.dir;
 const [dist, src, pub] = [join(root, "dist"), join(root, "src"), join(root, "public")];
@@ -23,6 +23,7 @@ const tokens: Record<string, string> = {
 	description: pkg.description,
 	npmName: pkg.metadata.npm.name,
 	cratesName: pkg.name,
+	ghcrImage: `ghcr.io/${repo.replace(/^https?:\/\/github\.com\//, "")}`,
 	authorName: author.name,
 	authorEmail: author.email,
 };
@@ -118,7 +119,7 @@ export async function build(options: BuildOptions = {}): Promise<DistFile[]> {
 	const dirMode: DirMode = options.dir ?? "relative";
 	const display = (abs: string, base: string) => dirMode === "full" ? abs : relative(base, abs);
 
-	// Bun.build's outputs already hold the bundled bytes in memory — no re-read from disk.
+	// Bun.build's outputs already hold the bundled bytes in memory, no re-read from disk.
 	// HTMLs get post-processed (placeholders, analytics, dead-script pruning)
 	// and rewritten; everything else stays as Bun emitted it.
 	const fromBundle = await Promise.all(

@@ -4,14 +4,34 @@
 	"type": "module",
 	"workspaces": [
 		"site",
-		"npm/facade"
+		"packaging/npm/facade"
 	],
-	"devDependencies": {
-		"@types/node": ">=22.18.0",
-		"typescript": "^5"
+	"scripts": {
+		"fmt": "dprint fmt",
+		"fmt:check": "dprint check",
+		"fmt:update": "dprint config update --yes",
+		"test:facade": "bun test packaging/npm/facade/test/",
+		"typecheck": "tsc --noEmit"
 	},
+	"devDependencies": {
+		"@types/bun": "catalog:",
+		"@types/node": "catalog:",
+		"dprint": "catalog:",
+		"runner-run": "catalog:",
+		"typescript": "catalog:"
+	},
+	"packageManager": "bun@1.4.2",
 	"volta": {
-		"node": "24.14.1",
-		"npm": "11.6.2"
+		"node": "26.4.0",
+		"npm": "11.17.0"
+	},
+	"catalog": {
+		"@biomejs/biome": "^2.5",
+		"@types/bun": "^1.4",
+		"@types/node": ">=22.18.0",
+		"dprint": "^0.57.4",
+		"runner-run": "npm:runner-run@^0.27",
+		"typescript": "^7",
+		"wrangler": "^4"
 	}
 }

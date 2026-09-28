@@ -1,0 +1,337 @@
+//! `runner completions`, generate dynamic shell completion scripts.
+
+use std::io::{BufWriter, Write as _};
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context as _, Result};
+use clap_complete::aot::Shell;
+use clap_complete::env::EnvCompleter;
+
+use crate::complete::SHELLS;
+
+/// Write dynamic completion registration scripts for both the `runner` and
+/// `run` binaries.
+///
+/// Resolves the target shell from the explicit argument, `$SHELL`, or the
+/// presence of `$PSModulePath` (PowerShell sets it but never `$SHELL`),
+/// looks up the matching completer from our [`SHELLS`] table, and calls
+/// [`clap_complete::env::EnvCompleter::write_registration`] directly, once
+/// per binary, so users only need a single
+/// `eval "$(runner completions zsh)"` in their rc file to get completion
+/// for both CLIs.
+///
+/// When `output` is `Some`, the scripts are written to that path (any
+/// existing file is overwritten) and a confirmation line is printed to
+/// stderr. Otherwise they go to stdout.
+pub(crate) fn completions(
+    shell: Option<Shell>,
+    output: Option<&Path>,
+    out: &mut crate::render::out::Out<'_>,
+) -> Result<()> {
+    let shell = shell
+        .or_else(detect_shell)
+        .context("could not detect shell, set $SHELL or pass explicitly: runner completions zsh")?;
+
+    let shell_name = env_shell_name(shell);
+    let completer = SHELLS
+        .completer(shell_name)
+        .with_context(|| format!("unsupported shell: {shell_name}"))?;
+
+    let exe = std::env::current_exe().context("failed to resolve current executable")?;
+    let runner_completer = exe.to_string_lossy().into_owned();
+    let run_completer = sibling_run_binary(&exe).map(|path| path.to_string_lossy().into_owned());
+
+    if let Some(path) = output {
+        let file = std::fs::File::create(path)
+            .with_context(|| format!("failed to create {}", path.display()))?;
+        let mut buf = BufWriter::new(file);
+        write_registrations(
+            completer,
+            &runner_completer,
+            run_completer.as_deref(),
+            &mut buf,
+        )?;
+        buf.flush()
+            .with_context(|| format!("failed to flush {}", path.display()))?;
+        writeln!(
+            out.stderr(),
+            "wrote completion script to {}",
+            path.display()
+        )?;
+    } else {
+        write_registrations(
+            completer,
+            &runner_completer,
+            run_completer.as_deref(),
+            out.stdout(),
+        )?;
+    }
+
+    Ok(())
+}
+
+/// Emit `runner`'s registration, and, when a sibling `run` binary was
+/// located, `run`'s registration separated by a blank line. Shared
+/// between the stdout and file-output paths so the byte stream is
+/// identical either way.
+fn write_registrations(
+    completer: &dyn EnvCompleter,
+    runner_completer: &str,
+    run_completer: Option<&str>,
+    buf: &mut dyn std::io::Write,
+) -> Result<()> {
+    completer
+        .write_registration("COMPLETE", "runner", "runner", runner_completer, buf)
+        .context("failed to write runner completion script")?;
+
+    // Only emit the `run` registration when this install actually ships the
+    // alias binary next to `runner`. Emitting a bare `run` completer when
+    // the sibling is missing would either hijack completion for some
+    // unrelated `run` on the user's PATH or produce a broken script that
+    // silently fails when invoked.
+    if let Some(run_completer) = run_completer {
+        buf.write_all(b"\n")
+            .context("failed to write completion separator")?;
+        completer
+            .write_registration("COMPLETE", "run", "run", run_completer, buf)
+            .context("failed to write run completion script")?;
+    }
+
+    Ok(())
+}
+
+/// Resolve the sibling `run` binary next to the `runner` executable so the
+/// generated completion script can invoke it directly. Returns `None` when
+/// no sibling exists; the caller skips the `run` registration in that
+/// case rather than guessing at PATH resolution.
+fn sibling_run_binary(runner_exe: &Path) -> Option<PathBuf> {
+    let parent = runner_exe.parent()?;
+    let candidate = parent.join(run_binary_filename());
+    candidate.is_file().then_some(candidate)
+}
+
+const fn run_binary_filename() -> &'static str {
+    if cfg!(windows) { "run.exe" } else { "run" }
+}
+
+/// Detect the current shell from the process environment.
+fn detect_shell() -> Option<Shell> {
+    shell_from_env(
+        std::env::var_os("SHELL").as_deref(),
+        std::env::var_os("PSModulePath").is_some(),
+    )
+}
+
+/// Resolve a shell from `$SHELL`, falling back to PowerShell when
+/// `$PSModulePath` is present.
+///
+/// PowerShell never sets `$SHELL` on any platform, but it always exports
+/// `PSModulePath` for module discovery, so its presence is the reliable
+/// pwsh signal when `$SHELL` is missing or names a shell we don't know.
+/// `$SHELL` still wins when it resolves: a pwsh session launched from bash
+/// inherits `SHELL=/bin/bash`, and second-guessing the user's login shell
+/// there would be worse than honoring it.
+fn shell_from_env(shell_var: Option<&std::ffi::OsStr>, has_psmodulepath: bool) -> Option<Shell> {
+    shell_var
+        .and_then(|raw| shell_from_path(Path::new(raw)))
+        .or_else(|| has_psmodulepath.then_some(Shell::PowerShell))
+}
+
+/// Map a shell binary path to a [`Shell`] variant.
+fn shell_from_path(path: &Path) -> Option<Shell> {
+    let stem = path.file_stem()?.to_string_lossy();
+    match stem.as_ref() {
+        "bash" => Some(Shell::Bash),
+        "zsh" => Some(Shell::Zsh),
+        "fish" => Some(Shell::Fish),
+        "elvish" => Some(Shell::Elvish),
+        "pwsh" | "powershell" => Some(Shell::PowerShell),
+        _ => None,
+    }
+}
+
+/// Parse the explicit `<shell>` arg, accepting either a bare name (`zsh`)
+/// or a full path (`/usr/bin/zsh`) so `runner completions $SHELL` works
+/// the same as bare `runner completions`.
+///
+/// Wired up as the `value_parser` for the arg in [`crate::cli`] in place
+/// of clap's stock `ValueEnum` parser, which only accepts the bare names.
+pub(crate) fn parse_shell_arg(raw: &str) -> Result<Shell, String> {
+    shell_from_path(Path::new(raw)).ok_or_else(|| {
+        format!(
+            "unsupported shell: {raw:?} (accepted: bash, zsh, fish, elvish, pwsh|powershell, bare \
+             name or full path)"
+        )
+    })
+}
+
+const fn env_shell_name(shell: Shell) -> &'static str {
+    match shell {
+        Shell::Elvish => "elvish",
+        Shell::Fish => "fish",
+        Shell::PowerShell => "powershell",
+        Shell::Zsh => "zsh",
+        _ => "bash",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::Path;
+
+    use clap_complete::aot::Shell;
+
+    use super::{
+        completions, parse_shell_arg, run_binary_filename, shell_from_env, shell_from_path,
+    };
+    use crate::tool::test_support::TempDir;
+
+    #[test]
+    fn parse_shell_arg_accepts_bare_name() {
+        assert_eq!(parse_shell_arg("zsh").unwrap(), Shell::Zsh);
+    }
+
+    #[test]
+    fn parse_shell_arg_accepts_absolute_path() {
+        // Regression guard: `runner completions $SHELL` (which expands to
+        // a full path) must succeed; the stock clap `ValueEnum` parser
+        // rejected anything but the bare name, so this is the whole reason
+        // the custom parser exists.
+        assert_eq!(parse_shell_arg("/usr/bin/zsh").unwrap(), Shell::Zsh);
+    }
+
+    #[test]
+    fn parse_shell_arg_treats_pwsh_and_powershell_identically() {
+        assert_eq!(parse_shell_arg("pwsh").unwrap(), Shell::PowerShell);
+        assert_eq!(parse_shell_arg("powershell").unwrap(), Shell::PowerShell);
+        assert_eq!(
+            parse_shell_arg("/usr/local/bin/pwsh").unwrap(),
+            Shell::PowerShell
+        );
+    }
+
+    #[test]
+    fn parse_shell_arg_error_lists_accepted_forms() {
+        let err = parse_shell_arg("ksh").expect_err("ksh should be rejected");
+        // Surface every accepted shell, including the `pwsh|powershell`
+        // pair, so users hit by the rejection see the full menu.
+        for needle in ["bash", "zsh", "fish", "elvish", "pwsh", "powershell"] {
+            assert!(
+                err.contains(needle),
+                "error message should mention {needle:?}; got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn completions_writes_to_file_when_output_provided() {
+        let dir = TempDir::new("runner-completions-output");
+        let target = dir.path().join("runner.zsh");
+
+        completions(
+            Some(Shell::Zsh),
+            Some(&target),
+            &mut crate::render::out::Out::Captured(&mut Vec::new(), &mut Vec::new()),
+        )
+        .expect("completions should succeed when writing to file");
+
+        let body = fs::read_to_string(&target).expect("script file should be readable");
+        assert!(
+            body.starts_with("#compdef runner"),
+            "file should start with runner's compdef header, got: {}",
+            body.lines().next().unwrap_or_default()
+        );
+        assert!(
+            body.contains("_clap_dynamic_completer_runner"),
+            "file should contain runner's completion function"
+        );
+    }
+
+    #[test]
+    fn completions_errors_when_parent_dir_missing() {
+        let dir = TempDir::new("runner-completions-missing-parent");
+        let bad = dir.path().join("does-not-exist").join("runner.zsh");
+
+        let err = completions(
+            Some(Shell::Zsh),
+            Some(&bad),
+            &mut crate::render::out::Out::Captured(&mut Vec::new(), &mut Vec::new()),
+        )
+        .expect_err("missing parent directory should fail");
+
+        assert!(
+            err.to_string().contains("failed to create"),
+            "error should name the file we failed to create, got: {err}"
+        );
+    }
+
+    #[test]
+    fn run_binary_filename_matches_platform() {
+        if cfg!(windows) {
+            assert_eq!(run_binary_filename(), "run.exe");
+        } else {
+            assert_eq!(run_binary_filename(), "run");
+        }
+    }
+
+    #[test]
+    fn shell_from_path_parses_bash() {
+        assert_eq!(shell_from_path(Path::new("/bin/bash")), Some(Shell::Bash));
+    }
+
+    #[test]
+    fn shell_from_path_parses_zsh() {
+        assert_eq!(shell_from_path(Path::new("/usr/bin/zsh")), Some(Shell::Zsh));
+    }
+
+    #[test]
+    fn shell_from_path_parses_fish() {
+        assert_eq!(
+            shell_from_path(Path::new("/usr/local/bin/fish")),
+            Some(Shell::Fish)
+        );
+    }
+
+    #[test]
+    fn shell_from_path_returns_none_for_unknown() {
+        assert_eq!(shell_from_path(Path::new("/usr/bin/ksh")), None);
+    }
+
+    #[test]
+    fn shell_from_env_prefers_recognized_shell_var() {
+        // A pwsh session launched from bash inherits SHELL=/bin/bash; the
+        // login shell the user opted into still wins over the fallback.
+        assert_eq!(
+            shell_from_env(Some("/bin/bash".as_ref()), true),
+            Some(Shell::Bash)
+        );
+    }
+
+    #[test]
+    fn shell_from_env_falls_back_to_psmodulepath_when_shell_unset() {
+        assert_eq!(shell_from_env(None, true), Some(Shell::PowerShell));
+    }
+
+    #[test]
+    fn shell_from_env_falls_back_to_psmodulepath_when_shell_unrecognized() {
+        assert_eq!(
+            shell_from_env(Some("/usr/bin/ksh".as_ref()), true),
+            Some(Shell::PowerShell)
+        );
+    }
+
+    #[test]
+    fn shell_from_env_returns_none_without_any_signal() {
+        assert_eq!(shell_from_env(None, false), None);
+        assert_eq!(shell_from_env(Some("/usr/bin/ksh".as_ref()), false), None);
+    }
+
+    #[test]
+    fn shell_from_path_handles_pwsh() {
+        assert_eq!(
+            shell_from_path(Path::new("/usr/bin/pwsh")),
+            Some(Shell::PowerShell)
+        );
+    }
+}

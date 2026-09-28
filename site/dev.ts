@@ -115,7 +115,7 @@ function scheduleRebuild(reason: string) {
 const targets = [
 	{ path: meta.src, recursive: true, label: "src" },
 	{ path: meta.pub, recursive: true, label: "public" },
-	{ path: resolve(meta.root, ".."), recursive: false, label: "Cargo.toml" },
+	{ path: resolve(meta.root, "..", "crates", "cli"), recursive: false, label: "Cargo.toml" },
 ];
 
 for (const t of targets) {

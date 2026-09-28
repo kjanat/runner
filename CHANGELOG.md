@@ -9,6 +9,16 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ## [Unreleased]
 
+### Release checklist
+
+- [ ] Bump `Cargo.toml`; MUST run `cargo check` without `--locked` to update `Cargo.lock`.
+- [ ] Update current-version references in `schemas/`, both AUR `PKGBUILD`s, and `README.md` container-image tags.
+- [ ] Search repository-wide for the old version; account for every match.
+- [ ] Move `Unreleased` entries into the new version section and rotate links.
+- [ ] Create and push a signed `vX.Y.Z` tag from `master`.
+- [ ] Minor bumps: after publish, raise the `runner-run` catalog range to `^0.Y` and refresh `bun.lock`; `@latest` breaks `--frozen-lockfile`.
+- [ ] First release with `runner-run-core`, `runner-run-schemes` and `runner-run-providers`: add a `CARGO_REGISTRY_TOKEN` secret to the `crates-io` environment, release, then add a trusted publisher for each (workflow `release.yml`, environment `crates-io`) and delete the secret.
+
 ### Added
 
 - FreeBSD distribution channel. A prebuilt port (`freebsd/runner`,
@@ -38,10 +48,1773 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   build is skipped with a warning when absent. Strict semver regex on the
   version input refuses anything containing `&`, `/`, `\`, or newlines
   before any `sed` runs.
+
+## [0.27.0] - 2026-09-27
+
+### Added
+
+- `--download[=true|false|ask]`, `--no-download`, `RUNNER_DOWNLOAD` and a
+  top-level `download` key in `runner.toml` decide whether a command that
+  downloads may run. Every rung of the run cascade and every exec capability
+  declares whether it can fetch; `run <name>` through `npx`, `bun x`, `uvx`,
+  `deno x` or `mise exec`, `runner install` and a `--package` fetch consult
+  the policy before spawning. Unset, runner asks on an interactive terminal
+  outside CI and allows elsewhere; `ask` without a terminal refuses, and
+  `false` refuses, which makes CI deterministic. Local rungs never ask: the
+  project's own bin dirs, `PATH` and a local exec form such as `yarn run` or
+  `pnpm exec` come before any fetching rung.
+
+- `[install]` takes `frozen`, `scripts` and `tools` as booleans, the config
+  forms of `--frozen`, `--scripts` and `--tools` and their `--no-` forms.
+
+- `list --only <source>` lists one source's tasks, repeatable and
+  comma-separated, and reads `RUNNER_LIST_ONLY`.
+
+- `npx`, `pnpx`, `bunx` and `yarnpkg` are accepted wherever a package manager
+  is named, as `npm`, `pnpm`, `bun` and `yarn`.
+
+- The GitHub Action takes a `version-file` input: a `.tool-versions` file whose
+  `runner` line (or `runner-run`, or a mise backend such as
+  `github:kjanat/runner` or `npm:runner-run`) sets the version to install.
+  `version` wins when both are set, and a file with no such line fails the
+  step. `version` no longer declares `latest` as its default, so an unset
+  `version` can defer to the file; it still installs `latest` when neither is
+  set.
+
+- `--package <name>` selects an npm package, and the task token names one of
+  the binaries its manifest declares: `run --package typescript tsc`. An
+  installed package resolves from its own `package.json`, or from `yarn bin`
+  under Yarn Plug'n'Play, never from the shared `node_modules/.bin` link
+  another package may have won. One that is not installed goes to the package
+  manager's package-selecting form (`npx --package`, `bun x --package`, `pnpm
+  --package= dlx`, `yarn dlx --package`, `deno x npm:<name>/<bin>`, `uvx
+  --from`), honouring `--runtime` and a non-Node `--pm` like the bare-binary
+  fallback does, and is refused when another installed package already
+  provides the binary or when the binary is a path such as `./tool`. A
+  binary the package does not declare is an error
+  naming the ones it has, the multi-binary ambiguity message suggests the
+  `--package` form, and a registry specifier such as `npm:typescript` that no
+  present tool executes is refused with the equivalent (#126).
+
+- `run make`, `run just`, `run task` and `run bacon` invoke the runner's own
+  entry point when the project uses it and no task carries that name, so
+  Make picks its `.DEFAULT_GOAL`, just its default recipe, and so on.
+  Arguments are forwarded. A `--source` choice naming the same runner allows
+  it; one naming another source refuses. A task named after the
+  runner wins (#137).
+
+- `run test` with no `test` task runs the ecosystem's own test runner:
+  `bun test`, `deno test`, `cargo test`, `go test ./...`, `node --test` over
+  every `test.<ext>` and `*.test.<ext>` file below the current directory, and
+  for Python whichever of pytest, nose2, ward, Django's `manage.py test`,
+  tox, nox or `unittest` the project has. Arguments are forwarded; a Node
+  file argument skips discovery.
+
+- Mise tasks carry what `mise tasks --json` declares beyond name and
+  description: `depends`, `depends_post`, `wait_for`, `dir`, `env`, `tools`,
+  `usage`, `file`, `sources`, `outputs`, and `timeout`. `runner why` prints
+  them under the selected task and fills its `dependencies`, `sources`, and
+  `outputs` fields, `list --json` adds `depends`, `dir`, and `usage`, and
+  `doctor --json` fills `tasks[].dependencies`. `cwd` in `why` and `doctor` is
+  the directory the task runs in when the source declares one. The direct TOML
+  fallback keeps `file` and leaves the rest empty.
+
+- `runner install` runs `mise install` before the package managers when the
+  project has a mise config, so tools the config declares (often the package
+  managers themselves) exist before they are called. `--frozen` adds
+  `--locked` when the config's lockfile exists. A project with only a mise
+  config and no manifest installs its toolchain. A missing `mise` binary
+  warns and continues. `--no-tools` skips the step; `runner doctor` lists it
+  under Decisions.
+
+- Tools mise manages are on the `PATH` of every process runner spawns in a
+  mise project, including the package manager `mise install` has just put
+  there.
+
+- `runner doctor` relays what mise says about the project: tools the config
+  declares that are not installed (`mise ls --missing`), and `mise tasks
+  validate` findings such as a missing or circular dependency. They appear
+  under Decisions and Warnings, and as `mise` diagnostics in `--json`.
+
+- `[env]`, `[tools.<name>].env` and `[tasks.<name>].env` set variables on the
+  processes runner spawns, narrowest layer winning. A value set for a task
+  beats the same name set for the tool running it, which beats the
+  project-wide one, which beats the inherited environment. Every layer still
+  contributes the names the narrower ones do not set.
+
+- `runner doctor --json` reports `overrides.env` carrying the variable
+  *names* each layer sets. Values are withheld, since that payload is meant
+  to be pasted into a bug report.
+
+- Shell completion offers a mise task's own flags and argument choices after
+  its name, from the `usage` spec the task declares. `run lower:leaf <TAB>`
+  offers `--fn`; `run baseline:explain <TAB>` offers that argument's
+  `choices`. A flag that takes a value suppresses further flag offers in the
+  position it consumes. Sources without a spec complete nothing.
+
+- A mise task whose spec marks a flag required fails before dispatch when the
+  flag is absent, naming the flag and the task's signature.
+
+- `runner why` prints a mise task's signature (`lower:leaf <--fn <name>>
+  [dir]`).
+
+### Changed
+
+- Settings are one model across flags, variables and `runner.toml`. A setting
+  resolves from the first layer that sets it: CLI, `RUNNER_*` variable,
+  `[tasks.<name>]`, the rest of `runner.toml`, project evidence, default. An
+  explicit `false` counts as a value. Every flag reads a variable derived from
+  its name, `RUNNER_<FLAG>` for a global flag and `RUNNER_<COMMAND>_<FLAG>`
+  for a command's own; a `--no-` form or an alias sets the same variable as
+  its flag, and the `run` binary's own flags read `RUNNER_RUN_*`. `runner
+  doctor` reports an invalid variable or config value and keeps going; other
+  commands refuse. Renamed and removed settings:
+  - `--explain` and `RUNNER_EXPLAIN` are `--dry-run` and `RUNNER_DRY_RUN`.
+  - `--runner`, `RUNNER_RUNNER`, `[tasks].prefer`, `[tasks].overrides` and
+    string task entries are `--source`, `RUNNER_SOURCE` and
+    `[tasks.<name>].source`. A chosen source is a hard selection.
+  - `[pm].<ecosystem>` is `[tasks.<name>].pm`, or `--pm` for the invocation.
+  - `[runtime].js` is `[runtime].javascript`, also settable per task.
+  - `-k`, `-K`, `[chain].keep_going` and `[chain].kill_on_fail` are
+    `--on-fail continue|wait|kill`, `RUNNER_ON_FAIL` and `[chain].on_fail`;
+    `-k` and `-K` stay as aliases, and giving two of them is a usage error.
+  - `--no-warnings` and `RUNNER_NO_WARNINGS` are `--warnings`,
+    `--no-warnings` and `RUNNER_WARNINGS`.
+  - `[runner]` is `[output]`, with `task_timing` renamed `timing` and
+    `fatal_errors` folded into `errors`. `[host].diagnostics` is
+    `[output.tool].quiet`. A task's `verbosity`, `stdout` and `stderr` are
+    `[tasks.<name>.output]`, `[tasks.<name>.output.tool].quiet` and the
+    `[tasks.<name>.output.task]` booleans `stdout` and `stderr`.
+  - `[github].group_output`, `[github].group_parallel` and
+    `[parallel].grouped` are `[output].groups` and
+    `[output.parallel].buffer`.
+  - `[install].scripts` takes `true` or `false`.
+  - `--fallback` and `[resolution].fallback` are removed; a task source with
+    no package manager takes one from `PATH`.
+  - `--on-mismatch` and `[resolution].on_mismatch` are removed; a manifest
+    that disagrees with its lockfile wins with a warning.
+  - `[install].on_collision` and `RUNNER_INSTALL_ON_COLLISION` are removed;
+    one package manager installs each shared directory.
+  - `--host-stream` and `[host].stream` are removed.
+
+- `--dry-run` explains and stops. For `run`, `install`, `clean` and both
+  chain modes it prints the plan, the argv, the working directory and the
+  names of the environment keys, asks for no network consent, and executes
+  nothing. Builtins reached through `run` (`run list`, `run info`) parse
+  their own flags and run in the current process, and `--dry-run` names
+  that action.
+
+- `-q` expands into the individual output settings at its own layer and sets
+  only what its level names. `-qq --warnings` shows warnings, and `-q` leaves
+  a task's `[output.tool].quiet` alone. GitHub Actions error annotations
+  follow `[output].errors`.
+
+- One resolver decides the package manager for every ecosystem. The manager
+  that dispatches `package.json` or `pyproject.toml` scripts is chosen from
+  the evidence in the task's scope: a `--pm` or `RUNNER_PM` choice, then a
+  `[tasks.<name>].pm` choice, then the manifest's `packageManager`, then its `devEngines.packageManager`, then
+  the lockfile, then an executable on `PATH`. A lockfile the repository
+  tracks outranks an untracked one beside it. `package.json5` and
+  `package.yaml` declare a manager the same way `package.json` does. `run`,
+  `why`, `doctor` and `list --json` report the same choice, as `pnpm via
+  pnpm-lock.yaml`, `bun via package.json "devEngines.packageManager"
+  (onFail=warn)` or `npm via PATH probe at /usr/bin/npm`, and `why` reports
+  it for the scope of the task it selected. `--pm deno` fills the Node slot,
+  since deno dispatches `package.json` scripts.
+  `--pm cargo` on a `package.json` script is refused as a missing
+  capability.
+
+- `devEngines.packageManager` is checked when a plan is made, so an
+  install or a package exec through the declared manager sees it too, and
+  an `onFail` of `error` refuses before anything spawns. The check applies
+  when that field is what selected the manager: a `packageManager` field, a
+  `--pm` choice or a `runner.toml` choice settles the choice without it, and
+  a manager that cannot take the operation is never asked. The declared
+  range is checked against `<manager> --version` with npm semver; a
+  prerelease build clears the range its release clears. A range that cannot
+  be read proceeds with a cannot-evaluate warning.
+
+- A manifest and a lockfile that name different package managers are
+  reported as a disagreement, naming both files and both managers; the
+  manifest still wins.
+
+- `run test` with no test script and no test files is an error naming the
+  directory and the patterns looked for. Discovered TypeScript tests get
+  `--experimental-strip-types`.
+
+- A task source that cannot be read at the root or the invocation directory
+  refuses `run` with the read error; `list` reports it. Extractors return
+  the tasks they could read with warnings for the rest, so a broken mise or
+  turbo member leaves every other task listed. A Yarn manifest or lockfile
+  that cannot be read stops dispatch.
+
+- Yarn Classic or Berry is decided from `packageManager`, `devEngines`
+  (`>=4` and `^1.22` count), `yarn.lock`, `.yarnrc.yml`, and failing all of
+  those from `yarn --version`. A manifest that names another manager says
+  nothing about Yarn, and `.yarnrc.yml` is Yarn config, weaker than any
+  declaration. One decision drives install, `run`, exec and `--package`, in
+  the member the invocation runs in. Berry's install uses `--immutable`
+  under `--frozen`, and `--no-scripts` denies scripts with
+  `--ignore-scripts` on Classic and `YARN_ENABLE_SCRIPTS=false` on Berry.
+
+- `--runtime bun` on a file Bun would run refuses when Bun is absent. A
+  file in a workspace member runs with the member's `node_modules/.bin`
+  first, whichever runtime takes it, and an explicit
+  `./packages/web/tool.sh` from the root gets `web`'s bin dirs.
+
+- `[tasks.make.env]`, `[tasks.just.env]` and the like reach `run make` and
+  the other default invocations, and `run bacon --ignored` keeps the `--`
+  before the job arguments.
+
+- `deno.json` tasks stay listed when `package.json` names deno as the
+  package manager, `JUSTFILE` in any letter case is a justfile, a `deno.json`
+  or `pyproject.toml` in a parent directory is found from a child
+  directory, a directory holding only `hello.go` runs it with `go run`, and
+  `--pm deno run jsr:@std/http/file-server` reaches `deno x`.
+
+- `run list` and the other builtins take precedence even when two workspace
+  members define a task of that name.
+
+- `.ps1` files run through PowerShell on every platform, with `-NoProfile
+  -ExecutionPolicy Bypass -File`: `pwsh` when it is on `PATH`, else the
+  `powershell` every Windows ships. A runtime that steps in for a file no
+  project runtime takes observes the host before it plans, so `--dry-run`
+  shows which executable won.
+
+- Package managers are probed on `PATH` in one declared order (npm, bun,
+  pnpm, yarn, deno) wherever a task source has no manager of its own.
+  Project roots and workspaces stop at the VCS root, so an unrelated outer
+  lockfile is never adopted. Outside a repository they stop below the home
+  directory or the filesystem root. Inside or outside one, they never climb
+  into an ancestor directory another user owns or can write to, such as
+  `/tmp`, so a `.git` or manifest planted there is ignored.
+
+- Node refuses a `.jsx` or `.tsx` file with the runtime choice that forced
+  it and the runtimes that can run it (`--runtime bun`, `--runtime deno`).
+  File extensions match case-insensitively.
+
+- `RUNNER_INSTALL_PMS` is not read: `runner install` uses every detected
+  package manager. `[task_runner]` is an unknown section.
+
+- `schemas/doctor.example.json` is generated from a typed example, and
+  `doctor --json` names the lockfile policy (`update` or `frozen`), the
+  download policy, the chain failure policy and the output settings under
+  `overrides`, with the origin of each `pm`, `runtime` and `source` choice.
+
+- `runner config init` writes the schema pragma and every default the schema
+  declares, live, and nothing else. The commented scaffold with its prose is
+  gone; the schema is the documentation, on hover through the pragma. The
+  thirteen keys that have an effective default carry it in the published
+  schema. Unknown-key warnings read the recognised fields from the schema
+  too, so a struct field cannot fall out of step with the loader.
+
+- The workspace library crates publish to crates.io as `runner-run-core`,
+  `runner-run-schemes` and `runner-run-providers`, internal to `runner-run`
+  with no stable API. Their Rust library names stay `runner_core`,
+  `runner_schemes` and `runner_providers`.
+
+- The `schema` cargo feature is removed. Every build carries schemars, and
+  `cargo schema` needs no flag.
+
+- `runner why`, `doctor`, `list` and completion rank same-named tasks with
+  the key `runner run` selects by: the tier a chosen source, package manager
+  or runtime puts the source in, then the source's position among the sources that
+  dispatcher runs, then the source's task priority. The default priority is
+  turbo, `package.json`, Makefile, justfile, Taskfile, `deno.json`, Cargo
+  aliases, Go, bacon, mise, `pyproject.toml`. `why --json` reports the key
+  as `match.rank`, which replaces `depth`, `display_order` and
+  `source_priority`, and each `doctor --json` duplicate-name conflict names
+  the field that decided it.
+
+- Two lockfiles of one ecosystem with equal standing resolve in the `PATH`
+  probe order: npm, bun, pnpm, yarn, deno.
+
+- A task addressed by source or workspace member that does not exist there
+  is refused with the address, as `task "site" not found in package.json of
+  workspace member nope`, by `run`, both chain modes and `why` alike.
+
+- A `packageManager` value that names no package manager is reported by the
+  `package.json` it is in, members included.
+
+- `list --json`, `info --json` and the human `doctor` report the signals and
+  the package-manager decision for every task source package managers
+  dispatch, keyed by the source's label: `signals["package.json"]`,
+  `decisions["pyproject.toml"]`. A source appears when a package manager
+  that dispatches it is detected or the project defines its tasks. Each
+  decision is `{ "pm", "via" }` or `{ "error" }`. PATH-probe hits that are
+  version-manager shims are listed under `shims`, each naming its
+  `manager`. `detected.runtimes` lists each runtime the root declares with
+  its expected version, where it is declared and the installed version,
+  and replaces `node_version` and `current_node`. `doctor --json` carries
+  the same signals for each ecosystem whose source package managers
+  dispatch, and a runtime tool for that ecosystem's interpreter.
+
+- A runtime's expected version is read from `.nvmrc`, `.node-version`, the
+  `nodejs` line of `.tool-versions` and `engines.node`. `info` prints every
+  runtime the root declares, and `runner install` warns for each whose
+  installed version falls outside the declared one. An empty `.nvmrc`
+  declares nothing.
+
+- Task FQNs use the source's label, so a Cargo alias is `root:cargo#t`.
+  `list` groups sources in task-priority order. `monorepo` is true when the
+  root declares a workspace. `doctor --json` drops `overrides.install_pms`
+  and `tasks[].self_executable`.
+
+- A task that forwards to another runner's same-named task gets that
+  runner's refusals, so any script that is a bare `make <name>` wrapper
+  forwards only variable assignments. Under `--runtime node`, `node --run`
+  names the `pre` and `post` scripts it skips as a `node` warning, and
+  `runner why` reports the runtime's warnings as the runtime note.
+
+### Fixed
+
+- `--no-scripts` and `--scripts` win over `[env]`, `[tools.<name>].env` and
+  `[tasks.<name>].env`. A repository `YARN_ENABLE_SCRIPTS = "true"` no longer
+  runs lifecycle scripts under `runner install --no-scripts` on Yarn Berry.
+
+- A workspace member symlinked to a directory outside the workspace root is
+  no member, and `clean` never removes a directory that resolves outside the
+  root.
+
+- `run test` with no `test` task tries the next present test runner when one
+  finds no test files. A Go module with a `package.json` runs `go test ./...`
+  instead of refusing for want of `*.test.js` files.
+
+- `runner install -qq` passes the package manager its quiet flag, as `run`
+  does: `npm --silent install`, `npm --silent ci`, `cargo -q fetch`, `uv
+  --quiet sync`, and the same for pnpm, Yarn Classic, Bun, Deno, Poetry and
+  Pipenv.
+
+- `runner install --frozen` in a Bundler project sets `BUNDLE_FROZEN=true`
+  and refuses without `Gemfile.lock`, so Bundler fails instead of rewriting
+  the lockfile.
+
+- `--frozen` refuses before spawning a package manager whose lockfile is
+  absent, naming the directory and the lockfiles it accepts: npm takes
+  `npm-shrinkwrap.json` as well, and Deno the file named with `"lock"` by
+  the nearest Deno config inside the project tree. A mise config
+  without `mise.lock` installs unlocked, since mise lockfiles are opt-in. A
+  lifecycle-script policy the manager cannot express is disclosed by
+  `runner install` and `--dry-run`.
+
+- A name reaches an exec primitive only when the primitive takes its shape:
+  `npx` refuses `user/repo#ref` and `go run` refuses a bare name.
+
+- `go run` of a directory such as `./cmd/tool` or `.` is local and runs
+  under `--no-download`; only a module path such as `example.com/tool@v1`
+  counts as a download.
+
+- `go run` refuses git and URL specs such as `user/repo#ref` and
+  `github:owner/repo`, so a project with both `go.mod` and `package.json`
+  no longer hands them to Go.
+
+- `run .` and `run ..` with a `node_modules/` present no longer read
+  `node_modules/./package.json` or the parent's `package.json` as an
+  installed dependency. A name segment starting with `.` is never a package.
+
+- `run <package>` for a Yarn Plug'n'Play dependency runs the binary named
+  after the package through `yarn exec`, so `run @angular/cli` runs
+  `yarn exec ng` instead of `yarn exec @angular/cli`.
+
+- A plan for a file a rung found carries the bin dirs of the workspace
+  member it sits in, and a member's `node_modules/.bin` precedes the
+  root's. A dependency's binary or a project bin found from a member runs
+  with that member's bin dirs first even when hoisting installed it at the
+  root, and so does one `run --package` selects.
+
+- A package manager the `PATH` fallback admits gets the same installed
+  version and variant as one the project names, so a `package.json` with
+  scripts alone runs Yarn 4 as Berry. A `devEngines` range such as `>=1`
+  admits both Yarn lines, so the installed version decides. The version
+  query runs the Yarn on the host `PATH` in the project directory, so
+  `--dir` sees the Yarn a directory-aware shim serves there. A
+  `node_modules/.bin/yarn` or `node_modules/.bin/node` never runs to report a
+  version. A Yarn whose line is still unknown runs scripts as
+  `yarn run <task>` and gets no `--silent`.
+
+- Python test detection looks in the invocation directory and then the
+  provider's scope, so `conftest.py` beside the tests and `pytest.ini` at
+  the root both select pytest from a subdirectory.
+
+- A `Justfile` that is a symlink is observed and marks the project root, in
+  any spelling.
+
+- A run reports the package manager of the task it selected, in that task's
+  workspace member, and warns about that member's manifest disagreeing with
+  its lockfile.
+
+- `--source just run build` fails when the justfile has no `build` recipe,
+  naming the source and the task.
+
+- `[tasks.<name>].pm` naming a package manager that cannot run the task
+  fails like `--pm`, naming the `runner.toml` that chose it, where it used
+  to fall back to the detected manager.
+
+- Editors complete provider values in `runner.toml` from labels alone. File
+  names and exec binaries such as `deno.json` and `npx` still validate.
+
+- `[tasks.<key>].env` matches the same keys as `[tasks.<key>.output]`:
+  `build`, `package.json:build`, `rfc:build` for a member task,
+  and `rfc:package.json#build`, least specific first.
+
+- A task whose name contains `#`, such as the script `build#prod`, keeps its
+  `[tasks."build#prod"]` settings. Its pm, runtime, source and output
+  settings used to be dropped once the task was selected.
+
+- A `packageManager` value that names no known manager, or ends in an `@`
+  with no version, voids `devEngines.packageManager` too; the lockfile or
+  `PATH` decides.
+
+- On Windows, a file task whose shebang names a POSIX shell (`bash`, `sh`,
+  `zsh`, ..., with or without `.exe`) receives its path in the form that
+  shell reads: relative to the working directory with forward slashes (a
+  `./` prefix kept for a name starting with `-`), or `/c/...` for a file
+  elsewhere. A shell named by a Unix path (`#!/bin/sh`) is found on `PATH`
+  by its name, since `\bin\sh` exists on no Windows drive (#121).
+
+- `go run` for a Go task passes `-buildvcs=true` when the project sits in a
+  checkout Go can read (Git, Mercurial, Subversion, Bazaar, Fossil), that
+  tool is on `PATH`, and the toolchain is Go 1.18 or newer, so the binary's
+  `debug.ReadBuildInfo` carries the revision instead of `(devel)`. A
+  `GOFLAGS` in runner's environment that already decides `-buildvcs` or
+  `--buildvcs` is left alone. A single Go file is never stamped, since Go
+  stamps nothing into `command-line-arguments` (#130).
+
+- `runner install` reports which package manager and program it was waiting
+  on when `wait()` fails, and stops and reaps the child first, matching the
+  parallel install lanes (#135).
+
+- A make target, or a package script that is a bare `make <name>` wrapper,
+  forwards only variable assignments (`NAME=value`, `NAME+=value`, `NAME:=value`
+  and the other GNU make forms), which the recipe reads as `$(NAME)`. Any other
+  word is refused before make runs, naming the word and the two ways to pass
+  it. `run --help` says so (#128).
+
+- `runner install` in a project with no package manager runs the project's
+  own `install` task when one exists, printing the same dispatch line as
+  `run install` (#129).
+
+- `runner doctor` prints signals and a decision only for task sources the
+  project uses (#122). The PATH probe lists one manager per line, with a
+  shim's target on a continuation line (#110).
+
+- `run <name>` with no matching task looks for `<name>` in the project's
+  own bin dirs and on `PATH` before any rung that can download, so an
+  installed `npx` or `make` runs as itself (#136). The fetching rungs come
+  last: `mise exec -- <name>` when the project uses mise, then the package
+  manager's exec primitive. On a terminal, a fetching rung asks `[y/N]`
+  first; a pipe proceeds. The resolver's `PATH` probe also searches mise's
+  tool dirs, so a project whose only package manager is mise-managed and
+  not yet activated detects it.
+
+- Mise task discovery accepts task references in `run` arrays
+  (`run = [{ task = "check" }]`) (#138). Referenced tasks render as `mise
+  run <task>` in the description column; step shapes runner does not model
+  are skipped.
+
+- Mise task discovery accepts a dependency carrying arguments
+  (`depends = [{ task = "gen", args = ["foo"] }]`, which mise emits as
+  `["gen", "foo"]`) and a structured tool request
+  (`tools = { node = { version = "22" } }`).
+
+- A failing `mise tasks --json` is reported. The TOML fallback serves a
+  project where mise is not installed.
+
+- `--frozen` finds the lockfile for a mise config outside the project root:
+  `.config/mise.toml`, `mise/config.toml` and `mise.local.toml` each pair
+  with their own lockfile.
+
+- A `--pm` or `RUNNER_PM` choice without an exec primitive refuses `run
+  <name>` once the local rungs miss, naming the chosen manager. A `--pm`
+  choice with an exec primitive is the only manager asked.
+
+- Task sources are read concurrently, on as many threads as the host runs
+  at once, so `run`, `list` and completion wait for the slowest extractor.
+
+- `runner clean` from a workspace member removes the root's directories as
+  well as the member's.
+
+- `--dry-run` reports the quiet support of the package manager variant in
+  the plan's scope, such as a Yarn Berry member under a Classic root.
+
+- A builtin in a parallel chain (`list`, `info`, `completions`, `clean`)
+  runs once the other items have spawned, and its output goes through the
+  chain's prefixed lines or its own group. Its `clean` prompt reads as
+  declined, and `install` is refused there.
+
+- `run test` through Node discovers `.js`, `.mjs`, `.cjs`, `.ts`, `.mts`
+  and `.cts` test files. A project whose only tests are `.jsx` or `.tsx`
+  gets the no-test-files error.
+
+- `runner install` with no package manager signal at the root installs
+  through the managers observed in the root scope. A manager declared only
+  in a workspace member stays out of the root install.
+
+- `--runtime` on a task in another workspace member looks for the runtime in
+  that member, so `--runtime bun` from the root runs a member script when
+  Bun is declared only in the member.
+
+- A `--pm` or `RUNNER_PM` choice absent from the invocation scope refuses
+  `run <name>` once the local rungs miss, with `no evidence for package
+  manager <name>`.
+
+- `run test foo.test.ts` through Node passes `--experimental-strip-types`
+  for a TypeScript file named on the command line.
+
+- `run make`, `run just` and the other default entry points refuse under a
+  `--source` choice naming another source.
+
+- `run --package <name> <bin>` under Yarn Plug'n'Play runs `yarn bin` in the
+  invoking workspace member and accepts a `.pnp.cjs` there or at the root.
+
+- `runner install` in a project with another ecosystem detected also
+  installs through a package manager the `PATH` fallback admits for an
+  observed task source, such as npm for a bare `package.json` beside
+  `Cargo.toml`. `doctor` reports the same install set.
+
+- `runner install` with two lockfiles that write one install directory,
+  such as `bun.lock` beside `package-lock.json`, runs one installer and
+  reports the other as shadowed. The install directories come from each package manager's declaration, so uv,
+  Poetry and Pipenv sharing `.venv` collide too.
+
+- A package manager chosen beside a runtime dispatches the task on that
+  runtime. npm, pnpm and Yarn run on Node, and Bun stands in for Node:
+  `--pm pnpm --runtime bun run build` runs `pnpm run build` with Bun answering
+  to `node` for its scripts. A runtime that cannot stand in is refused naming
+  both: `runner cannot run the task under package manager pnpm on runtime deno:
+  deno does not stand in for node`. The same holds for `[tasks.<name>].pm`
+  beside a runtime from any layer.
+
+- A runtime or package manager that only `[tasks.<name>]` chooses counts as
+  present for that task when it is on `PATH`, so
+  `[tasks.build.runtime] javascript = "bun"` runs `build` on Bun without a Bun
+  lockfile while other tasks, files and `install` keep their defaults.
+
+- `list`, `doctor` and `why` report the source and runtime a task table
+  selects, as `run` uses them.
+
+- `--no-download` or `--no-warnings` after a subcommand overrides the
+  positive flag before it, and the reverse. A short spelling counts by its
+  position too, alone or in a cluster: `install --no-frozen -f` and
+  `install --no-frozen -qqf` install frozen.
+
+- A valid command-line value overrides an invalid `RUNNER_*` value for the
+  same setting: `RUNNER_PM=bogus runner --pm npm` runs with npm.
+
+- `--on-fail continue -k` and `-K --on-fail kill` are accepted. Flags that
+  give `on_fail` different values are still a usage error.
+
+- The `runner.toml` schema accepts provider aliases (`npx`, `pnpx`, `bunx`,
+  `yarnpkg`) wherever it accepts a provider name.
+
+- A mise shim for Volta no longer marks every mise shim as a Volta shim in
+  `doctor`, `info` and their JSON.
+
+- A command-line choice displaces its opposite from the environment:
+  `RUNNER_RUN_PARALLEL=1 runner run -s a b` runs in sequence and
+  `RUNNER_LIST_JSON=1 runner list --raw` prints names. Both of a pair set in
+  the environment is a usage error.
+
+- Under a `--source` choice a bare name the source does not supply is refused
+  instead of running a program from `PATH`. File paths, builtins, the
+  chosen runner's own entry point and the chosen source's own program still
+  run: `runner --source cargo run cargo --version` and `runner --source turbo
+  run turbo` find it in the project's bin dirs or on `PATH`.
+
+- `RUNNER_QUIET` and `-q` each expand at their own layer, so
+  `RUNNER_QUIET=2 runner -q` still hides warnings and quiets the tool.
+
+- `runner lsp` reads `runner.toml` with the TOML parser, so hover, completion
+  and diagnostics work under quoted keys such as
+  `[tasks."package.json:build".runtime]`. Config warnings and errors print
+  such keys quoted.
+
+- A `packageManager` naming Deno dispatches `package.json` scripts through
+  `deno task` when an npm lockfile or a `devEngines.packageManager` naming
+  npm sits beside it.
+
+- A `Justfile` symlink whose target is missing is absent; the other task
+  sources are still read.
+
+- A parallel chain item whose output cannot be written, as with stdout on a
+  full disk, fails with exit 1 in both the prefixed and the grouped mode, and
+  so does a parallel install lane.
+
+- `--pm deno` or `--runtime deno` runs the `deno.json` task over a
+  `package.json` script of the same name, in the order the chosen provider
+  lists its sources. A `--runtime` choice ranks its sources before a `--pm`
+  choice does, so `--pm bun --runtime deno check` runs the Deno task.
+
+- The dispatch arrow for a file a runtime runs names the runtime's words
+  and stops at the file, so positional arguments stay `[args]`.
+
+- `--dry-run` reports a package manager with one quiet flag as applying the
+  quiet level, and a `-qqq` request against it records the clamp to quiet.
+
+- The name-conflict footer of `runner list` and the `doctor` conflicts name
+  the task `runner run` selects under a `--source`, `--pm` or `--runtime`
+  choice.
+
+- Inside a workspace member nested in another member, the inner member is
+  the current one. A bare task name both define runs the inner member's
+  task, and `runner install` and `runner list` treat the inner member's tasks
+  as local.
+
+- A package manager a task's `pm` chooses is admitted from `PATH` at the
+  root when only another workspace member shows it, so a member's
+  `pm = "pnpm"` task runs when a sibling holds `pnpm-lock.yaml`.
+
+- A `--runtime` choice leaves `runner run <name>` in a Python, Go or Rust
+  project to that project's exec primitive, so `--runtime bun ruff` in a uv
+  project runs `uvx ruff` and warns that the runtime was not applied, with or
+  without `--pm uv`.
+
+- `runner.toml` is read from the project or workspace root, so its settings
+  apply when runner runs from a subdirectory or a member, and `runner config`
+  reads, writes and prints the root's file. A `runner.toml` or
+  `.runner.toml`, in the directory or its `.config/`, marks the root on its
+  own. `runner config path`, `show` and `validate` name the file that was
+  loaded, and `runner config init` refuses when any of those files exists and
+  overwrites that file under `--force`.
+
+- Bundler's built-in test runner is `bundle exec rake test`, so `runner test`
+  runs `rake` inside the bundle.
+
+- A `package.json` or `pyproject.toml` that does not parse declares no
+  package manager, and the other task sources still list and run. A broken
+  `package.json` is reported as unreadable.
+
+- Under `--source`, a task the chosen source lacks is refused as missing from
+  that source even when another source, such as `turbo.json` or `deno.json`,
+  cannot be read. The chosen source being unreadable still stops the run.
+
+- The directory holding a stand-in link, such as Bun linked as `node`, is
+  named by the user's uid and created with mode 0700. A directory at that path that is a symlink, belongs
+  to another user, or is writable by group or others is refused instead of
+  being put on the task's `PATH`.
+
+- `runner test` under `--pm`, `RUNNER_PM` or a `runner.toml` package manager
+  reports that manager's refusal instead of running another manager of its
+  ecosystem, so `--pm npm test` with only `.tsx` tests no longer runs `bun
+  test`. A chosen manager with no evidence in the project is refused. Other
+  ecosystems still run their own tests, so `RUNNER_PM=npm runner test` in a
+  Cargo project runs `cargo test`.
+
+- A task in a workspace member that calls `runner` again no longer repeats the
+  workspace's detection and config warnings.
+
+### Security
+
+- `[env]`, `[tools.<name>].env` and `[tasks.<name>].env` in a repository
+  `runner.toml` may not set `PATH`, `BASH_ENV`, `ENV`, `LD_PRELOAD`,
+  `LD_LIBRARY_PATH`, `LD_AUDIT`, `DYLD_*`, `NODE_OPTIONS`, `BUN_OPTIONS`,
+  `npm_config_node_options`, `npm_config_script_shell`, `PYTHONSTARTUP`,
+  `PYTHONPATH`, `PYTHONHOME`, `PYTHONUSERBASE`, `RUBYOPT`, `RUBYLIB`,
+  `PERL5OPT`, `PERL5LIB`, `PERLLIB`, `PERL5DB`, `GOFLAGS`, `RUSTC`,
+  `RUSTC_WRAPPER`, `RUSTC_WORKSPACE_WRAPPER`, `CARGO_BUILD_RUSTC`,
+  `CARGO_BUILD_RUSTC_WRAPPER`, `CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER`,
+  `CARGO_TARGET_<triple>_RUNNER`, `CARGO_TARGET_<triple>_LINKER`,
+  `GIT_CONFIG*`, `GIT_SSH`, `GIT_SSH_COMMAND`, `GIT_EXEC_PATH`,
+  `GIT_ASKPASS`, `SSH_ASKPASS`, `GIT_PROXY_COMMAND`, `GIT_TEMPLATE_DIR`,
+  `BASH_FUNC_*`, `MAKEFILES`, `npm_config_userconfig`,
+  `npm_config_globalconfig`, `YARN_RC_FILENAME`, `YARN_YARN_PATH`,
+  `GCONV_PATH`, `JAVA_TOOL_OPTIONS`, `JDK_JAVA_OPTIONS` or `_JAVA_OPTIONS`.
+  npm config names match in any case. A layer that does is refused before
+  anything spawns, naming the variable, so a checkout cannot choose what code
+  a tool loads.
+
+- The toolchain step resolves `mise` from the host `PATH`. It was spawned with
+  the project's own bin directories front-loaded, so an executable committed
+  to `node_modules/.bin/mise` ran in place of the real one, before the package
+  managers and under the identity running `runner`, and neither `--frozen` nor
+  `--no-scripts` prevented it. Task dispatch is unchanged: a task binary still
+  resolves from `node_modules/.bin` first.
+
+## [0.26.2] - 2026-09-08
+
+### Fixed
+
+- `runner install` names the package manager and executable when one of the
+  detected managers is not on `PATH`, and points at `--pm` and
+  `[install].pms`. It used to fail with a bare `No such file or directory
+  (os error 2)` after the previous manager's output.
+
+## [0.26.1] - 2026-09-05
+
+### Fixed
+
+- Inside a workspace member, its own `Makefile`, `justfile`, `Taskfile`,
+  `mise.toml`, and `bacon.toml` are read again. 0.26.0 anchored task discovery
+  on the workspace root and read only manifest scripts and `deno.json` tasks per
+  member, so `runner --dir playground` listed the root's make targets and
+  reported the member's as not found. Member runner tasks now list bare from
+  inside the member, as `<member>:<task>` elsewhere, and run in the member's
+  directory.
+- A source qualifier (`make:build`) reaches the scope that defines the task.
+  The nearest-scope filter ran before the qualifier, so a root `make:build`
+  shadowed by a member `package.json` script failed with `not found in make`.
+
+## [0.26.0] - 2026-09-05
+
+### Added
+
+- List and run workspace member tasks from the workspace root. Members are
+  read from `package.json` `workspaces`, `pnpm-workspace.yaml`, `lerna.json`,
+  `deno.json` `workspace`, and `Cargo.toml` `[workspace]`; each member's
+  manifest scripts and `deno.json` tasks appear as `<member>:<task>` and run in
+  the member's directory. A bare name resolves to the root first, then to the
+  single member defining it; a name several members define is refused with the
+  qualified spellings. `doctor --json` reports `project.workspace` and scopes
+  every task and source by member; `list --json` gains `tasks[].member`;
+  completions offer `<member>:<task>`.
+- Anchor detection on the workspace root from any directory beneath it.
+  Inside a member, that member's tasks win bare names and lead completions,
+  the root's follow, and a shadowed root task stays reachable as
+  `root:<task>`; `<scope>:<source>#<task>` forms resolve from anywhere.
+  Local-file tokens and package-manager exec fallbacks keep resolving against
+  the invocation directory.
+- Per-task `[tasks.<key>]` settings address workspace member tasks as
+  `member:task` or `member:source#task`, layered over the bare name and
+  `source:task` keys per axis. `--explain` reports the scope a task was picked
+  from (current member, root, or member), the scopes it outranked, and the
+  directory it runs in.
+- Add independent `[runner]` output categories, `[host].diagnostics`, and
+  per-task stdout/stderr preservation controls. `--explain` reports the
+  effective policy, applied host arguments, and unsupported reductions.
+  Per-task timing and the final chain summary are separate categories, allowing
+  summary-only output.
+- Per-task `progress`, `groups`, and `task_timing` switches under
+  `[tasks.<key>]` hide one task's dispatch arrow, GitHub Actions group, or
+  chain timing line without a global `-q`. A global quiet rung or `[runner]`
+  `false` still wins over a per-task `true`.
+
+- Release archives, the man-page tarball, the container image, and the npm
+  tarballs carry GitHub build-provenance attestations; `mise install
+  github:kjanat/runner` and `gh attestation verify` check them (https://github.com/kjanat/runner/issues/125).
+- The GitHub Action verifies the downloaded npm tarball with
+  `gh attestation verify`. New inputs: `verify` (`auto`, `require`, `off`) and
+  `token`.
+
+### Changed
+
+- Redesign `-q` through `-qqqq` as distinct output-policy levels. `-q` now
+  affects runner progress only, `-qq` requests safe host quieting, `-qqq`
+  suppresses recoverable runner error decoration, and `-qqqq` mutes all runner
+  text while preserving task streams and exit status. Larger counts clamp to
+  mute. Host adapters now apply only audited controls that preserve task output
+  (https://github.com/kjanat/runner/issues/116). An explicit `-q` merges with
+  the `[runner]` and `[host]` sections instead of replacing them; the quietest
+  setting on each axis wins.
+- `doctor`/`list`/`why` JSON is schema version 1 again. Version 2 (v0.20.0)
+  added fields. `--schema-version` accepts `1`.
+- Inside a member, a root task the member shadows is spelled `root:<name>` in
+  `list` and the dispatch arrow, so the printed token runs that task.
+
+### Fixed
+
+- Two workspace members whose manifests declare no name and whose directories
+  share a basename (`apps/web`, `tools/web`) are now spelled by path in `list`,
+  completions, the dispatch arrow, and every qualification hint, so the printed
+  token runs the task instead of naming both members.
+- A source-qualified name several members define (`package.json:site`) is
+  refused with the qualified spellings, the same as the bare name, instead
+  of running whichever member sorts first.
+- The npm facade no longer throws at startup when `bugs` is the object form,
+  and a missing `/lib` or `/usr/lib` no longer aborts libc detection.
+- A failed install head under fail-fast reports its summary and exit code
+  before chain pre-flight can reject a later token.
+
+## [0.25.1] - 2026-08-12
+
+### Fixed
+
+- Package and `pyproject.toml` script dispatch now identifies a missing selected
+  package manager and why it was chosen instead of reporting an opaque spawn
+  error (https://github.com/kjanat/runner/issues/109).
+
+## [0.25.0] - 2026-08-06
+
+### Added
+
+- Expanded version reporting for both `runner` and `run`: `-v` and `-V` print
+  the concise version, `--version`/`--build-options` include the source
+  revision, build channel, target, profile, and Rust compiler. `--revision`
+  prints a Bun-style SemVer identifier; untagged builds receive an automatic
+  `dev.<commit-count>` prerelease and modified worktrees a `.dirty` marker.
+  Revision output names the invoked binary, quiet modifiers select concise
+  output, and detailed modes accept `--json` for structured build metadata.
+
+### Fixed
+
+- `install.sh` now selects the published native archives on FreeBSD, NetBSD,
+  and macOS instead of rejecting every non-Linux OS. It supports each system's
+  base checksum command and marks the unverified NetBSD/macOS paths with a link
+  for reporting failures (https://github.com/kjanat/runner/issues/117).
+- The npm facade selects the Linux platform package by detected libc instead of
+  `optionalDependencies` order, so installs carrying both variants (Bun, Deno)
+  no longer get a glibc binary on musl. Only the GNU sibling installed on musl
+  is now a facade error, not a `spawnSync` `ENOENT`; the static musl build stays
+  a fallback on glibc. `RUNNER_LIBC=glibc|musl` overrides detection
+  (https://github.com/kjanat/runner/issues/106).
+
+## [0.24.1] - 2026-08-03
+
+### Added
+
+- Container images on GHCR (`ghcr.io/kjanat/runner`) and Docker Hub
+  (`kjanat/runner`), published per release for `linux/amd64` and `linux/arm64`.
+  The image is `scratch` holding only `/runner` and `/run`, so a build stage
+  pulls the binaries with `COPY --from=ghcr.io/kjanat/runner:<version> /run
+  /usr/local/bin/run` instead of downloading an installer on every cache bust
+  (https://github.com/kjanat/runner/issues/99). The binaries are musl-static,
+  so one tag serves Alpine and Debian stages alike.
+
+### Fixed
+
+- Bun package-exec fallback now invokes the explicit `bun x` subcommand instead
+  of the `bunx` hard-link alias. On Windows, runner resolves bare executables
+  through `PATH` and `PATHEXT`; the stock uppercase `.EXE` produced `bunx.EXE`,
+  which Bun's case-sensitive invocation-name detection misclassified as plain
+  `bun` and reported `Script not found` for the requested package
+  (https://github.com/kjanat/runner/issues/103,
+  https://github.com/oven-sh/bun/issues/36826).
+- `install.sh` now completes on Alpine and other busybox userlands. Checksum
+  verification called `sha256sum -c --status`, and `--status` is GNU-only, so
+  busybox aborted the install right after downloading the archive
+  (https://github.com/kjanat/runner/issues/101). The `require_command
+  sha256sum` guard passes on busybox, which is why the failure surfaced
+  mid-install rather than up front.
+
+## [0.24.0] - 2026-08-01
+
+### Added
+
+- Action outputs `runner-bin` and `run-bin` (full paths to each installed
+  binary).
+- Best-effort Android/Termux support (aarch64): a native
+  `aarch64-linux-android` release target cross-compiled with the Android NDK
+  via `setup-cross-toolchain-action`, a matching
+  `@runner-run/android-arm64` npm package, and installer routing that selects
+  the Android asset on Termux. Earlier releases lack that asset, and their
+  aarch64 musl binaries fail on Android's loader with `unexpected e_type: 2`
+  (reproduced on v0.23.0); the release job now asserts the Android binaries
+  are `ET_DYN` with `/system/bin/linker64` as interpreter.
+
+### Changed
+
+- The `kjanat/runner` action installs the CLI by downloading the platform's
+  `@runner-run/*` package tarball straight from the npm registry and extracting
+  it, instead of shelling out to `npm install`. This skips the node startup and
+  dependency-tree resolution that dominated the old install, cutting a cold
+  `latest` install from roughly 8s to under 1s on Linux and Windows hosted
+  runners. The `sha512` integrity npm publishes for the tarball is verified
+  before extraction, and network fetches time out at 3s and retry twice.
+
+## [0.23.0] - 2026-07-23
+
+### Added
+
+- `--runtime <node|bun|deno>` (`RUNNER_RUNTIME`, `[runtime].js`), a JS-runtime
+  axis separate from `--pm`. Each runtime brings its own script runner, file
+  runner and package-exec primitive, and the package manager gets no vote:
+  `node --run`/`node <file>`/`npx`, `bun --bun run`/`bun <file>`/`bunx --bun`,
+  `deno task`/`deno run <file>`/`deno x`.
+
+  `bun --bun run <script>` symlinks `node` for the script's whole process tree,
+  so a dependency bin carrying a `#!/usr/bin/env node` shebang runs on bun
+  instead of system Node. Plain `bun run` never could express that, and
+  `--pm bun` conflated "bun installs here" with "use bun's runtime".
+
+  A forced runtime outranks a local file's `#!` line, which is what makes
+  `run --runtime bun ./cli.js` and `run --runtime bun <dependency-bin>` run on
+  bun; overriding the shebang is the case the axis exists for. It also selects
+  the runtime for source files by extension (`run --runtime bun main.ts`,
+  previously reachable only as `--pm bun`), decides the `runner test` →
+  `bun test` fallback, is inherited by nested `runner`/`run` invocations, and
+  is reported by `--explain` and `runner doctor --json`.
+
+  While a runtime is forced, `package.json` (plus `deno.json` under
+  `--runtime deno`) outranks the other task sources, the way a forced `--pm`
+  already biases toward what it owns. Without that, `--runtime bun build` in a
+  turborepo would silently dispatch the turbo task and force nothing. When the
+  winning task still comes from a source that selects no runtime (`make`,
+  `just`, `Taskfile`, `turbo`, cargo, …), runner warns and names it rather than
+  dropping the request.
+
+  `--runtime node` dispatches `node --run <script>`, Node's own script runner
+  (Node 22+); on an older Node it fails up front with a diagnostic naming the
+  version floor rather than Node's cryptic `bad option`. Note that `node --run`
+  deliberately **does not run `pre<task>` / `post<task>` lifecycle scripts**,
+  which `npm run`, `bun run` and `deno task` all execute; runner warns when the
+  dispatched task declares one. It also needs user arguments separated by `--`,
+  which runner injects, and Node forwards everything after it to the script
+  rather than reading it as a node option (so `--runtime node build -- --watch`
+  does not enable node's watch mode).
+
+### Fixed
+
+- A local file run through Deno now gets an explicit permission set
+  (`--allow-read`, `--allow-write`, `--allow-net`, `--allow-env`,
+  `--allow-run`, `--allow-sys`). `deno run <file>` defaults to deny-all and
+  does not honour the file's shebang, so the same `main.ts` ran fine under node
+  and bun and died under deno the moment it read an env var, a file, or the
+  network. The grant stops short of `-A`, whose extra `--allow-import` would let
+  the file fetch and execute code from any host; node rejects a remote
+  `http(s)` import and bun cannot resolve one, so Deno's default import
+  allowlist stays in force. Applies on any detected Deno project (a `deno.json`
+  or `deno.lock`), not only `--pm deno <file>` / `--runtime deno <file>`.
+
+## [0.22.0] - 2026-07-22
+
+### Changed
+
+- `-q`/`--quiet` (and `RUNNER_QUIET`) now cross the process boundary into the
+  spawned tool instead of only silencing runner's own output. `run -q <task>`
+  passes the host its own silence flag — `npm --silent`, `pnpm --silent`,
+  `yarn --silent`, `bun run --silent`, `cargo -q`, `deno task -q`, `make -s`,
+  `task -s`, `mise --quiet`, `uv`/`poetry` `--quiet` — so a host that writes its
+  banner to stdout (npm on an npm project) no longer corrupts a pipeline reading
+  that stdout, the same failure #86 fixed one layer up. Hosts with no such flag,
+  or whose only "quiet" would also eat the task's own output (`just`, `turbo`,
+  `go run`, `bacon`, `pipenv`), are left untouched rather than warned about.
+  Existing `-q` callers who relied on the tool staying verbose will now see it
+  silenced; scope the quiet to runner alone by leaving `-q` off and configuring
+  per task instead. `RUNNER_QUIET` additionally accepts a numeric level
+  (`0`–`3`) alongside the truthy words it already took, and follows the usual
+  CLI > env precedence: a passed `-q` count wins outright, so the env can no
+  longer escalate an explicit `-q` to a higher level. An unrecognized
+  `RUNNER_HOST_STREAM` env value is ignored (default `inherit`) rather than
+  aborting the run, matching how a bad `RUNNER_QUIET` is treated; `runner
+  doctor` still reports both.
+
+### Added
+
+- Quiet escalates pytest-style: `-qq` also mutes runner's non-fatal warnings
+  (folding in `--no-warnings`), `-qqq` is the saturating floor. The resolved
+  level is exported to spawned children (`RUNNER_QUIET=<n>`), so a task that
+  shells out to `runner` again inherits it — previously only the env var
+  propagated, never the flag.
+- `--host-stream <inherit|stderr>` (`RUNNER_HOST_STREAM`), an orthogonal knob
+  that asks the host to keep stdout clean by routing its diagnostics to stderr.
+  Only pnpm has the primitive (`--use-stderr`); other hosts no-op it. Composes
+  with any quiet level.
+- `[tasks]` is now an open, Cargo-`[dependencies]`-style map keyed by task name:
+  each entry is a string shorthand for the source/runner pin (`build = "turbo"`)
+  or a table of per-task settings (`build = { runner = "turbo", verbosity =
+  "quiet" }`, or a `[tasks.build]` sub-table). `prefer` and `overrides` stay as
+  reserved back-compat keys. The new `verbosity` setting (string
+  `off|quiet|very-quiet|silent`, or a `{ level, stream }` table) is the per-task
+  form of the quiet/stream knobs, deep-merged under any global flag/env, so one
+  noisy task can be pinned quiet without a global flag. It is scoped to that
+  task's immediate host tool and does not cross into a nested `runner` (only the
+  global `-q`/`RUNNER_QUIET` level propagates). A typo in a `[tasks.<name>]`
+  table (`runer`, or a `verbosity` sub-field) is surfaced as an unknown-key
+  warning like every other config key, instead of being silently dropped.
+
+## [0.21.0] - 2026-07-21
+
+### Added
+
+- A chain of more than one task closes with a per-task roll-up on stderr:
+  status, duration, and the exit code of each failure, plus counts and the
+  chain's own exit code attributed to the task that produced it. Fail-fast runs
+  name the tasks they never started. Under GitHub Actions each failed task also
+  becomes an `::error::` annotation, so a failure in a long `--keep-going` run
+  is visible without reading the log. The annotations follow
+  `[github].group_output`; `--quiet` silences the whole summary.
+- A token naming an installed dependency resolves to the binary that
+  dependency's manifest declares. `run @typescript/native --noEmit` runs
+  `node_modules/@typescript/native/bin/tsc` without touching the registry,
+  which is the only way an npm alias (`"@typescript/native":
+  "npm:typescript@^7"`) can resolve at all: its directory name exists in no
+  registry, so `npx` answered with a 404. Packages declaring several binaries
+  none of which is named after the package, or none at all, are reported
+  instead of guessed at, and `--explain` names the package and the binary it
+  picked.
+- Nested `runner`/`run` processes carry an invocation stack, and a task already
+  on it is refused with the cycle it closes (`package.json:a -> package.json:b
+  -> package.json:a`). A script like `"tsc": "run -q tsc"` used to spawn copies
+  of itself until the process tree collapsed. The stack is inherited through
+  the package manager between two runner processes, and `--quiet` does not
+  suppress the diagnostic.
+
+### Fixed
+
+- A flag written immediately after the task now reaches the task instead of
+  being matched against runner's own options. `run tsc -p tsconfig.json
+  --noEmit` bound `-p` to `--parallel`, entered chain mode, and then rejected
+  `--noEmit` as a non-task positional; no number of `--` delimiters fixed it
+  across a nested dispatch. Flags before the task are runner's, everything
+  after it is the task's, at every level.
+- `--quiet` no longer writes GitHub Actions `::group::`/`::endgroup::` markers
+  to stdout. Workflow commands are a stdout protocol, so `run -q <task>` inside
+  a pipeline whose output a parent parses (`npm pack --json`) corrupted that
+  output. Quiet now suppresses every piece of runner's own output, including
+  the parallel block headers.
+- The dispatch arrow names the exec primitive it actually runs (`npx`, `bunx`,
+  `pnpm exec`, `yarn exec`) rather than the package manager, which read as
+  though runner had run `npm <package>` as a shell command.
+
+## [0.20.0] - 2026-07-16
+
+### Added
+
+- `[install].on_collision` (`RUNNER_INSTALL_ON_COLLISION`) decides what
+  `runner install` does when two detected package managers write the same
+  directory. `"resolve"` (the default) installs with the PM already resolved
+  for that ecosystem (lockfile, `packageManager`, `[pm].node`) and skips the
+  other, printing which one it skipped; `"error"` refuses to pick and exits 2.
+  Under `"resolve"`, naming both writers in `[install].pms` still runs both;
+  `"error"` refuses the collision even when both writers are explicitly named.
+
+### Changed
+
+- Package managers that write the same install directory no longer install
+  concurrently. `bun install` and `deno install` over one `node_modules/` now
+  run one after another; managers with their own directories (cargo, uv, go)
+  still overlap.
+- The install-dir collision warning is confined to `runner install` and
+  `doctor`, the surfaces that can act on it. It was reaching `run`, `list`,
+  `info`, and every nested runner process, none of which install anything.
+  `doctor` also reports the install plan (which PM installs a shared directory,
+  and which is shadowed) as a `conflicts[]` entry alongside duplicate task
+  names.
+- Detection warnings are printed once per project, not once per runner process.
+  A `package.json` script that calls `runner` again (`"fmt": "runner run
+  lint:fix fmt:dprint"`) no longer repeats its parent's warnings.
+
+### Fixed
+
+- Deno counts as a `node_modules` writer in any project with a `package.json`,
+  not only one that sets `nodeModulesDir` explicitly. Deno's documented default
+  for a `package.json` project is the manual `node_modules` mode, so
+  `deno install` was writing the same tree as bun/npm/pnpm/yarn while runner
+  reported no collision at all.
+- Two node lockfiles in one directory are settled by which one git tracks
+  before falling back to the fixed `bun > pnpm > yarn > npm` preference. A
+  project that commits `bun.lock` and gitignores `package-lock.json` is a bun
+  project, whichever way the preference order happens to point. Committed
+  status is the signal, not ignore status: a gitignored lockfile is ambiguous
+  (it can mean "we never commit lockfiles", which is evidence the manager *is*
+  used). One lockfile still answers by itself, and no git process is spawned
+  unless a directory holds two or more.
+- A prerelease package-manager build (`bun@1.3.0-canary`) satisfies a
+  `devEngines` range like `>=1.2` instead of reporting a version mismatch.
+  Semver excludes prereleases from ranges that don't name one, which is correct
+  for a dependency solver and wrong for a "is the installed tool new enough"
+  check.
+- `runner install` no longer orphans a running package manager when waiting on
+  another one fails.
+
+## [0.19.1] - 2026-07-05
+
+### Added
+
+- `runner lsp` completes `[tasks.overrides]` entry keys with the
+  project's own task names (discovered from the document's directory,
+  same detection as the CLI), each carrying its source and description.
+  Works both under the `[tasks.overrides]` header and as a dotted
+  `overrides.<task>` key in `[tasks]`; names that aren't bare TOML keys
+  (e.g. `build:web`) insert quoted. Dotted `overrides.<task> =` values
+  now complete the source-label vocabulary like their
+  `[tasks.overrides]` equivalents.
+- `runner lsp` key completions scaffold the value shape the field's
+  schema type calls for, when the client supports snippets: array fields
+  insert `pms = ["|"]`, string fields `node = "|"`, others a bare tab
+  stop; table fields continue the dotted key path (`overrides.`), which
+  re-triggers completion. Clients without snippet support keep the plain
+  `name =` insert.
+
+### Fixed
+
+- `runner lsp` no longer offers field completions after a dotted key
+  (`group_output.` suggested the section's whole field list; TOML reads
+  the dot as a key path, and no section has enumerable sub-keys). Key
+  completions also now carry an explicit text edit replacing the typed
+  token, so a completion accepted from a stale list (e.g. left open
+  across a backspace) substitutes the token instead of pasting after it
+  (`group_outputgroup_output =`).
+- `runner lsp` value completions inside an open string literal
+  (`prefer = ["ba`) insert the bare word instead of a quoted one; the
+  quotes are already typed (and auto-paired), so accepting previously
+  produced `""bacon""`.
+- `runner lsp` is now comment-aware: no completions or hover at or after
+  a `#` (whole-line or trailing); a `#` inside a string literal still
+  isn't treated as a comment.
+
+## [0.19.0] - 2026-07-05
+
+### Added
+
+- `doctor --json` `overrides` now reports every resolver override state
+  except `parent_group_open` (internal runner-to-runner plumbing, never a
+  user override): `failure_policy`, `install_pms`, `output_grouping`
+  (`group_output`/`github_group_parallel`/`parallel_grouped`),
+  `prefer_sources`, `script_policy`, and `task_source_pins`. Previously
+  only `pm`/`pm_by_ecosystem`/`runner`/`prefer_runners`/`fallback`/
+  `on_mismatch`/`explain`/`no_warnings`/`quiet` were surfaced, so `-k`/`-K`,
+  `[tasks].prefer`, `[tasks.overrides]`, `[install]`, and `[github]`/
+  `[parallel]` config could be set without `doctor` ever showing it.
+
+### Changed
+
+- **Breaking:** `doctor --json` and `why --json` now always emit the
+  structured report (previously reachable via `--schema-version 3`); the
+  flat v1/v2 shape is gone from both. `--schema-version` now only accepts
+  `1`; `2`/`3` are rejected.
+- `runner config init`'s scaffold is now generated from `RunnerConfig`'s
+  schemars metadata instead of hand-typed: section headers and their
+  leading comments come straight from the section structs' doc comments,
+  and every enum-valued field's inline hint (`pm.node`, `pm.python`,
+  `resolution.fallback`, `resolution.on_mismatch`, `install.scripts`,
+  `task_runner.prefer`) is generated from the same types the resolver
+  parses those values with, not hand-typed prose. A config field, or an
+  accepted value for one of these, can no longer ship without scaffold
+  coverage; drift-guard tests fail the build instead. A few section
+  descriptions read slightly differently as a result. `FallbackPolicy`,
+  `MismatchPolicy`, and `ScriptPolicy` gained real `label()`/`ALL` (or
+  `SETTABLE`) methods, replacing four separate hardcoded copies of their
+  accepted strings (parse function, two display call sites, and now the
+  scaffold) with one.
+
+### Removed
+
+- The v1/v2/v3 schema split. Not enough external adoption yet to justify
+  carrying three versions per surface. Today's shape is the only one,
+  retroactively called v1. Committed schema files dropped their version
+  suffix (`doctor.v3.schema.json` → `doctor.schema.json`, etc.); the 10
+  superseded schema/example files are deleted.
+
+- `doctor --json` `overrides.fallback`, `on_mismatch`, `pm`,
+  `pm_by_ecosystem`, `runner`, and `prefer_runners` are now closed enums in
+  `doctor.schema.json` (with the accepted values documented per variant),
+  not generic strings; editors and validators can now catch a typo'd
+  override value against the committed schema instead of silently
+  accepting anything. `pm_by_ecosystem`'s keys are constrained the same
+  way: the schema now lists the seven ecosystem names explicitly instead
+  of allowing any string key, and its values are plain (non-nullable)
+  package-manager labels; the report never emits a `null` there.
+  `failure_policy`, `script_policy`, and `install_pms` (new fields, see
+  Added above) get the same closed-enum treatment from the start.
+
+### Fixed
+
+- `runner schema --all` no longer surfaces a raw Rust panic if the
+  init-template generator ever drifts from `RunnerConfig` in a released
+  binary (the drift-guard test should already catch this before merge);
+  it now reports a clean CLI error instead.
+- `doctor --json` `overrides.quiet` is now listed as required in
+  `doctor.schema.json`, like every other boolean override; it was kept
+  optional for compatibility with the pre-collapse `doctor` v3 schema,
+  which this same release already removed.
+- `runner lsp` diagnostics for a wrong-typed known field (e.g.
+  `pms = "bun"`) now point at the offending value instead of line one.
+- `runner lsp` value completion for sequence-typed fields
+  (`[install].pms`, `[tasks].prefer`, `[task_runner].prefer`) wraps the
+  first element as `["bun"]` when no `[` is typed yet; accepting a
+  completion previously inserted a bare scalar, minting the exact type
+  error above. Inside an open `[` the element stays bare.
+- `runner lsp` header completion after a dotted partial (`[tasks.`) now
+  offers only that parent's sub-tables (`overrides`) instead of the full
+  top-level section list, and offers nothing under a parent with no
+  sub-tables (`[github.`). Deprecated sections and fields
+  (`[task_runner]`) now carry the LSP deprecated tag (strikethrough) in
+  completions and a deprecation banner in hover.
+
+## [0.18.1] - 2026-07-04
+
+### Fixed
+
+- The v0.18.0 npm packages spawn-failed with `EACCES`: the platform
+  packages' new explicit `bin` field disabled `directories.bin` linking, so
+  npm no longer marked the native binaries executable at install, breaking
+  both `npx @runner-run/<platform> …` and the `runner-run` facade. Platform
+  `bin` entries now point directly at the native binaries and expose both
+  commands (`npx --package=@runner-run/<platform> runner …` and `… run …`);
+  the launcher shim and the erroneous `bin` + `directories.bin` combination
+  are gone. Versions up to 0.17.0 were unaffected; 0.18.0 is deprecated on
+  npm.
+- The npm dist artifact now crosses the build→publish handoff as a tarball
+  so unix file modes survive the zip-based artifact store; the publish job
+  refuses non-executable binaries and smoke-tests the packed tarballs
+  (install + execute every bin) before publishing.
+
+## [0.18.0] - 2026-07-04
+
+### Added
+
+- The `@runner-run/*` npm platform packages are runnable standalone: each
+  ships a package-relative launcher exposed as a single `runner` bin, so
+  `npx @runner-run/<platform> install -f task1 task2` and
+  `npx --package=@runner-run/<platform> runner list` work without the
+  `runner-run` facade, useful for platform-pinned installs (locked-down CI
+  images) that don't want the facade's sibling platform packages in the
+  resolution. One bin entry on purpose: npx auto-selects a package's sole
+  bin; a second entry would force always naming the command.
+
+### Fixed
+
+- Tab completion offers task candidates for the second and later chain
+  positions: `run -s build <TAB>` / `run -p build <TAB>` completed nothing,
+  because the trailing positional had no completion source. Chain-aware: the
+  trailing words only complete as tasks when `-s`/`-p` precedes the first
+  task on the line (mirroring dispatch, where a later `-s`/`-p` is forwarded
+  to the task); plain `run build <TAB>` still completes flags only.
+- The generated platform-package `keywords` no longer nest the libc value as
+  an array-in-array (`[["glibc"]]`).
+
+## [0.17.0] - 2026-07-04
+
+### Added
+
+- FQN task syntax: the `root:<source>#<name>` identity that `doctor --json` /
+  `why --json` print for a task is now runnable;
+  `run 'root:package.json#deno:importsmap'` (the `root:` scope prefix is
+  optional) dispatches that exact task. Every source label of every schema
+  version round-trips, including v3's `cargo-alias`, which previously named a
+  task no syntax could invoke.
+- `runner why` interprets its argument exactly like `run` does, qualified
+  syntax (`why deno:lint`), FQN (`why root:package.json#build`), and the
+  colon-name fallback below, so it explains the very dispatch `run` would
+  perform instead of reporting "no candidates" for tokens `run` accepts.
+- Makefile descriptions from the inline self-documenting form
+  (`build: deps ## Build the project`), the idiom `##` help targets are built
+  on. The preceding-line `## doc` form still wins when both are present.
+
+### Changed
+
+- A qualified or FQN miss (`deno:nope`, `package.json#nope`) is now a hard
+  error in every path. Previously an FQN token fell through to the PM-exec
+  fallback, where bunx/npx treated it as a package spec and resolved it off
+  the network; a typo could hang on registry resolution or download an
+  arbitrary package. Bare unmatched names still fall through; `user/repo#ref`
+  package specs still work.
+- Single runs and chain pre-validation (`run -p`/`-s`) report a qualified
+  miss with one unified message, and miss errors add a note when a source's
+  task list failed to load (a broken `package.json` used to produce only a
+  misleading `did you mean …?` hint).
+- A CLI chain-failure flag now beats the opposite polarity from a lower
+  layer: `run -s a b -k` with `[chain] kill_on_fail = true` in `runner.toml`
+  keeps going instead of aborting with a cross-source conflict; the config
+  polarity had no command-line escape hatch. Same-source conflicts
+  (`-k -K`, both env vars, both config keys) still error.
+- Boolean `RUNNER_*` env vars (`RUNNER_QUIET`, `RUNNER_EXPLAIN`,
+  `RUNNER_NO_WARNINGS`, `RUNNER_KEEP_GOING`, `RUNNER_KILL_ON_FAIL`) warn and
+  are ignored when set to an unrecognized token. `RUNNER_KEEP_GOING=flase`
+  (typo'd "false") used to silently read as truthy, the opposite of the
+  intent. Recognized, case-insensitive: `1`/`true`/`yes`/`on` and
+  `0`/`false`/`no`/`off`.
+
+### Fixed
+
+- `package.json` scripts whose names start with a source label
+  (`deno:importsmap`, `cargo:check`, …) are reachable by their bare name
+  again. The qualifier parser claimed the prefix (`deno` → deno.json), the
+  qualified lookup missed, and dispatch fell through to PM-exec; an exact
+  full-name match now wins on a qualified miss. A genuine `deno.json` task
+  still outranks the colon-named script when both exist.
+- Streaming parallel chains (`run -p`, the default outside GitHub Actions)
+  no longer hang when a task exits but leaves a backgrounded descendant
+  holding the inherited stdout/stderr pipe (`some-daemon & exit 0`). Pipe
+  readers are now drained with the same bounded grace the grouped path
+  already used, instead of an unbounded join that blocked until the
+  descendant died.
+- A `try_wait` error while polling a parallel chain no longer orphans the
+  already-spawned sibling processes and their reader threads; both parallel
+  paths route the error through the same kill-and-reap cleanup as a spawn
+  failure.
+- A malformed `devEngines` value in `package.json` (e.g. a Corepack-style
+  string where the spec wants an object) no longer erases every script and
+  the `packageManager` signal behind a false `not valid JSON` warning. The
+  field degrades to "absent"; the rest of the manifest parses normally.
+- The Taskfile fallback parser (used when the `task` binary is absent) is a
+  real YAML parse now: quoted and namespaced task names (`"build:prod":`)
+  are no longer silently dropped, and a Taskfile that fails to parse
+  surfaces a `failed to read tasks` warning instead of silently yielding
+  zero tasks.
+- A Makefile target whose header appears twice (legal in make) is listed
+  once instead of twice; a later documented duplicate still contributes the
+  description when the first occurrence had none.
+
+## [0.16.1] - 2026-07-04
+
+### Fixed
+
+- `npx runner-run` now resolves to the full CLI. Added a `runner-run` bin
+  alias; previously npx failed with `could not determine executable to run`
+  because neither shipped bin (`run`, `runner`) matched the package name.
+  (Reaches users only on this published release; `npx runner-run@0.16.0`
+  stays broken.)
+- The no-prebuilt-binary error now names the bun `minimumReleaseAge` pitfall:
+  its age gate also filters the `@runner-run/*` platform packages, which must
+  be excluded by exact name (no scope/glob), not just the `runner-run` facade.
+
+### Changed
+
+- Internal: the `run` alias binary now dispatches through the same
+  `dispatch` entry point as `runner`, building a typed `Cli` from the parsed
+  alias rather than keeping a second resolver-override and command-dispatch
+  copy in `dispatch_run_alias`. The alias keeps its bespoke help/version
+  forwarding, flat completions, and `run` man page. One behavior delta: a
+  bare `run -k`/`-K` (a chain-failure flag with no task and no `-s`/`-p`)
+  now maps to the project dashboard (`command: None`) and drops the inert
+  chain-failure flag before resolving overrides, so it no longer errors when
+  the opposite polarity is supplied out-of-band via
+  `RUNNER_KILL_ON_FAIL`/`RUNNER_KEEP_GOING` or a `[chain]` config. The old
+  eager builder kept the flag and hit the cross-source conflict; the
+  dashboard never consults the failure policy, so dropping it is correct. See
+  https://github.com/kjanat/runner/issues/52.
+
+## [0.16.0] - 2026-07-01
+
+### Added
+
+- Editor language server (`runner lsp`, built with `--features lsp`): a stdio LSP
+  for `runner.toml` providing live **diagnostics** (the same checks as
+  `runner config validate`, plus deprecation hints), **hover** docs sourced from
+  the JSON Schema, and **completion** of section names, field names, and value
+  sets (package managers, the `[tasks]` runner/PM/source labels, policy enums,
+  booleans). The validation, schema docs, and label vocabulary are reused from
+  the CLI, so editor feedback never drifts from `runner` itself.
+- `[tasks]` section in `runner.toml` for a persistent, declarative preference
+  over which source runs an ambiguous task name (one that exists under more than
+  one source, e.g. a `package.json` script *and* a `turbo` task). Previously
+  this could only be expressed per-invocation (`package.json:build`,
+  `--pm bun`, `--runner turbo`).
+  - `[tasks].prefer`, a rank-only global order. Labels may be task runners
+    (`turbo`, `make`, …), package managers (`bun`, `npm`, … map to
+    `package.json`; `deno` → `deno.json` then `package.json`), or source names
+    (`package.json`). Unlike the old `[task_runner].prefer`, it never
+    hard-rejects an unlisted source; it only reorders ties.
+  - `[tasks.overrides]`, per-task pins, e.g. `build = "turbo"`, `dev = "bun"`,
+    that beat the global order for those names.
+  - An explicit `source:task` qualifier, `--runner`, or `--pm`/`RUNNER_PM` still
+    outranks these file settings.
+
+### Deprecated
+
+- `[task_runner].prefer` is deprecated in favor of `[tasks].prefer`. Existing
+  configs keep working with their original restrictive behavior and now emit a
+  migration warning; when both sections are set, `[tasks]` takes over. The key
+  is flagged `deprecated` in the committed JSON Schema; `runner config init`
+  keeps a commented migration stub.
+
+## [0.15.0] - 2026-06-29
+
+### Added
+
+- `runner install` gained a two-way install-time lifecycle-script control:
+  lifecycle/build scripts are the primary supply-chain attack surface during
+  dependency installs, and several package managers (npm, pnpm, …) are moving to
+  scripts-off-by-default in upcoming majors, so projects need to deny *and*
+  force-on.
+  - `--no-scripts` skips them, mapping to each manager's native skip mechanism:
+    `--ignore-scripts` for npm/yarn-classic/pnpm/bun, `--no-scripts` for
+    composer, `YARN_ENABLE_SCRIPTS=false` for yarn-berry (which dropped the
+    flag); deno already denies by default. Managers with no skip mechanism
+    (cargo, go, bundler, uv/poetry/pipenv) print a `warn:` and proceed.
+  - `--scripts` forces them on where a manager can express it:
+    `--no-ignore-scripts` for npm, `YARN_ENABLE_SCRIPTS=true` for yarn-berry,
+    and a bare `--allow-scripts` (allow all) for deno. Managers that already run
+    scripts by default (composer, cargo, go, bundler, uv/poetry/pipenv,
+    yarn-classic) are satisfied without a flag. bun and pnpm (>=10) can't be
+    forced on by a flag; their dependency build scripts are gated by a manifest
+    allowlist (`trustedDependencies` / `onlyBuiltDependencies`) that runner won't
+    write, so they `warn:` instead of silently no-op'ing.
+  - The two flags are mutually exclusive. Both the dropped-deny and the
+    unforceable notices fire whenever their policy is active and are *not*
+    silenced by `--no-warnings` / `RUNNER_NO_WARNINGS` (unlike the cosmetic
+    collision/version warnings), because each is the only signal the request
+    couldn't be honored.
+  - Configurable via `[install].scripts = "deny" | "allow"` in runner.toml and
+    `RUNNER_INSTALL_SCRIPTS=deny|allow`, with the usual precedence: CLI flag over
+    `RUNNER_INSTALL_SCRIPTS` over `[install].scripts`.
+- `run <path>` / `runner run <path>` now executes a local file directly
+  instead of handing it to a package manager's package-exec primitive
+  (`bunx`/`npx`/`pnpm dlx`/`deno x`/`uvx`), which used to resolve the local
+  path as a remote package and fail with a registry 404 or a `git clone`
+  error. A token with an explicit local prefix (`./`, `../`, `/`, `~`, or a
+  Windows drive root), a bare filename, and a prefix-less relative path
+  (`bin/tool`) are each run as the file when they match no task: a recognized
+  source file runs via the detected runtime
+  (`.ts`/`.mts`/`.cts`/`.js`/`.mjs`/`.cjs` via bun, `deno run`, or node, while
+  `.jsx`/`.tsx` run only via bun or deno; Node has no JSX transform, so a
+  node-only project reports a clear `node cannot run` error instead of
+  building an unrunnable `node app.tsx`; `.py` via `uv run` or python; `.go`
+  via `go run`), a `#!` shebang (including the `#!/usr/bin/env -S <interp>
+  <args>` form, whose quoted arguments are kept intact) is parsed and invoked,
+  and a native binary or self-executable
+  script is spawned directly, including an execute-only binary (Unix mode
+  0111), whose unreadable shebang probe is treated as "no shebang" so the
+  binary still spawns directly rather than hard-failing the run. A source file
+  carrying the exec bit but no shebang still runs via its runtime; a raw
+  `execve` on shebang-less text fails `ENOEXEC`, so `chmod +x deploy.ts;
+  run ./deploy.ts` dispatches `bun deploy.ts` rather than erroring (this also
+  fixes whole-tree breakage on vfat/exfat/ntfs-3g mounts that report mode
+  0777 for every file). Only an explicit-prefix path outranks a same-named
+  task; a prefix-less `bin/tool` lets a matching `make bin/tool` target win
+  first and runs as a file only after task lookup misses. A missing explicit
+  path reports a clear error rather than a 404. Path lookup is anchored on the
+  resolved project directory (the `--dir`/`RUNNER_DIR` target, else the cwd),
+  the same directory task detection scans and the spawned child runs in, so a
+  relative or bare token under `--dir` resolves there instead of silently
+  missing and mis-routing back into the package-exec 404 path.
+- Chain mode now reports per-task wall-clock duration on completion. Sequential
+  and live (`-p`) parallel runs print a concise `· <task> finished in 1.2s
+  (exit 0)` line to stderr after each task; grouped parallel output folds the
+  same summary into each task's block footer (inside the GitHub Actions
+  `::group::` so it stays attached). Durations format compactly (`342ms`,
+  `1.2s`, `1m 04s`); the band is chosen from the rounded value, so a duration
+  that rounds up to a full minute (e.g. `59.95s`) prints `1m 00s`, never an
+  out-of-band `60.0s`. Minute-band seconds round half-up to the nearest whole
+  second too, so `119.94s` prints `2m 00s` rather than a floored `1m 59s`. The
+  synthetic install head of an `install` chain is
+  timed the same way in both `-s` and `-p` modes. Timing is diagnostic
+  meta-output, so `--quiet` (`RUNNER_QUIET`) and `--no-warnings`
+  (`RUNNER_NO_WARNINGS`) suppress it.
+- `runner install -p <TASK> <TASK>` runs the post-install tasks in parallel
+  (`-s` stays the default sequential). Install always runs first as the
+  prerequisite, never as a parallel sibling; then the tasks fan out. A
+  failed install still aborts the tasks unless `-k`; `-K` (kill siblings) now
+  bites for the parallel post-install phase.
+
+### Fixed
+
+- Forcing a package manager with `--pm` / `RUNNER_PM` now biases same-name task
+  selection toward that PM's own task source. Previously a name defined in both
+  `package.json` and `deno.json` (e.g. `check`) always resolved to the
+  `package.json` script per the default tier and was then run *through* the
+  forced PM (`RUNNER_PM=deno run check` → `deno task check`), which breaks when
+  the script relies on npm lifecycle build artifacts deno cannot honor. Now the
+  forced PM's own source wins the conflict, most-native first: `RUNNER_PM=deno`
+  picks `deno:check`; `--pm bun` picks `package.json:check`. The rule is general
+  across every PM; deno is one member, not a special case, and a PM that owns
+  no task source (Bundler, Composer) re-orders nothing. Only conflicting
+  same-name candidates are re-ordered; runs with no `--pm`/`RUNNER_PM` are
+  unchanged. See https://github.com/kjanat/runner/issues/70.
+- GitHub Actions log groups no longer nest when one `runner`/`run` invokes
+  another (e.g. `runner` → an `npm`/`postinstall` script → `run -p A B C`). A
+  parent that opens a group marks its descendants (`RUNNER_GROUP_ACTIVE`), so
+  a nested runner detects the open group and stays silent instead of emitting
+  a second `::group::` that would close the parent's fold early. Inherited
+  through intermediate processes, so the whole chain collapses to one group.
+- Under GitHub Actions, a child command that emits its own `::group::` /
+  `::endgroup::` workflow commands (e.g. some test runners) no longer corrupts
+  runner's grouped (`-p`) output: during grouped replay the group title is
+  surfaced as plain text and the stray `::endgroup::` is dropped, while
+  `::warning::`/`::error::`/`::notice::` annotations pass through untouched.
+- A leading `~`/`~/` in `--dir` (or `RUNNER_DIR`) is now expanded to the
+  user's home directory before the project directory is resolved. Shells
+  only expand an unquoted tilde at the start of a word, so `--dir=~/foo`
+  reached `runner` verbatim and was treated as relative, joined onto the
+  cwd to produce a bogus `<cwd>/~/foo` that never exists. Unsupported forms
+  such as `~user` are left untouched, and the path passes through unchanged
+  when no home directory is set.
+
+## [0.14.3] - 2026-06-26
+
+### Added
+
+- `[install].pms` config + `RUNNER_INSTALL_PMS` env restrict which detected
+  package managers `runner install` runs. In a polyglot repo where, e.g.,
+  both `bun` and `deno` would write `node_modules`, `pms = ["bun"]` keeps
+  install to one. A listed-but-undetected PM errors. `--pm`/`RUNNER_PM` still
+  takes precedence; `[pm]` continues to scope only script dispatch.
+- `runner install` and `doctor` now warn when two detected package managers
+  would install into the same directory, today `node_modules` (a node PM
+  plus a `nodeModulesDir`-enabled Deno). The warning points at `[install].pms`
+  and is suppressed once the allowlist narrows install to a single writer.
+
+### Changed
+
+- Published `@runner-run/*` platform packages now carry `keywords`, a
+  descriptive `description`, and a full README (instead of a thin stub).
+  These are the binary sub-packages npm selects via `optionalDependencies`;
+  the richer metadata raises their Socket.dev Quality score and explains the
+  facade-resolution mechanism to anyone landing on them directly.
+
+### Fixed
+
+- `runner.toml` parsing is now forward-compatible: an unrecognized section or
+  field (a typo, or a key written by a newer `runner`) is ignored with a
+  warning instead of aborting the command. Previously an unknown key was a
+  hard parse error, so a config written by one version could brick task
+  dispatch, including postinstall `run` hooks, under another. Genuine
+  errors (unreadable file, malformed TOML, wrong type on a known field) still
+  fail. The JSON Schema stays strict (`additionalProperties: false`) so
+  editors keep flagging typos inline.
+
+## [0.14.2] - 2026-06-25
+
+### Added
+
+- `runner config` subcommand to manage `runner.toml`: `init` scaffolds a
+  fully-commented starter file (`--force` to overwrite), `show` prints the
+  effective config (`--json` for machine output), `validate` parses and
+  checks it (exit 2 on error), and `path` prints the resolved file path. The
+  scaffold's line 1 is a `#:schema` directive pointing at the committed JSON
+  Schema, so tombi/taplo give autocompletion in any project with no setup.
+- `runner.toml` is now documented in the README with a `## Configuration`
+  section covering every section and the override precedence chain.
+
+### Changed
+
+- `config validate` rejects a `[chain]` that sets both `keep_going` and
+  `kill_on_fail` true; the resolver already errored on this combination at
+  dispatch time; validation now catches it statically against the file
+  alone.
+- JSON Schema URLs rehosted from `https://kjanat.github.io/schemas/…` to
+  `https://kjanat.github.io/runner/schemas/…`. Changes the `$id` of every
+  committed schema and the `$schema` field emitted by `doctor`/`list`/`why`
+  `--json`. The base is now sourced from `[package.metadata].schema-base`.
+
+## [0.14.1] - 2026-06-25
+
+### Added
+
+- The rendered API docs (rustdoc / docs.rs) now display the project logo
+  and favicon, set via `#![doc(html_logo_url, html_favicon_url)]` pinned to
+  `branding/icon.svg`. See https://github.com/kjanat/runner/pull/59
+- `-q`/`--quiet` (and a truthy `RUNNER_QUIET`) suppress the `→` dispatch
+  line on stderr plus the dispatch-time `--explain` trace, for clean output
+  when `runner` wraps another command. See
+  https://github.com/kjanat/runner/pull/56
+- Short flags `-K` (`--kill-on-fail`) and `-f` (install `--frozen`), plus a
+  stable `--help` flag ordering via display-order bands.
+
+### Changed
+
+- `--help` polish: colorize inline flag tokens instead of rendering literal
+  backticks, hide the `bundle`/`go-task` aliases from the `--pm`/`--runner`
+  lists, terser `help`/`schema`/quiet descriptions, and reorder commands so
+  `list` sits with `run` and `why` precedes `doctor`.
+
+### Fixed
+
+- `cargo doc` (and the docs.rs build) no longer fail under the crate's
+  `deny`-level rustdoc lints: broken intra-doc links (`cmd::run`,
+  `argv[0]`) are repaired. See https://github.com/kjanat/runner/pull/59
+- mise tasks with a whitespace-only `description` now fall back to the run
+  command instead of rendering a blank description.
+
+## [0.14.0] - 2026-06-22
+
+### Changed
+
+- Built-in verb dispatch is split between the two surfaces. The explicit
+  `runner <verb>` subcommand, `install`, `clean`, `list`, `info`,
+  `completions`, is now **always** the built-in and is never shadowed by a
+  same-named project task. The run path (`run <verb>` / `runner run <verb>`)
+  runs a same-named task when one exists, and otherwise falls back to that
+  built-in's default form instead of the package-manager exec path (so
+  `run install` with no `install` task installs dependencies rather than
+  attempting `bunx install`). Previously the precedence was reversed:
+  `runner install` deferred to a task named `install` (e.g. a `Makefile`
+  `install` target), which surprised projects whose `install` means "install
+  the built artifact" rather than "install dependencies". Reach a same-named
+  task with `run install` / `runner run install`; the built-in default for
+  `info` on the run path is a plain task list (no deprecation warning, which
+  remains specific to the explicit `runner info` subcommand). See
+  https://github.com/kjanat/runner/pull/55
+- The `run` alias now forwards `--help`/`-h` and `--version`/`-V` to the
+  task when they follow a task name: `run <task> --help` reaches the
+  task's own help instead of printing `run`'s (previously `run <task> --`
+  was required). `run --help`/`--version` with no task, including after
+  global flags like `run --pm npm --help`, still print this binary's own
+  help/version, and `run <task> -- --help` still forwards literally. The
+  `runner run` subcommand is unchanged. Because `-h`/`--help`/`-V`/
+  `--version` are no longer clap arguments on the alias, they are
+  documented in the help footer rather than the options list.
+
+## [0.13.1] - 2026-06-14
+
+### Added
+
+- `runner doctor --json` schema **v3** (now the default for `doctor`):
+  the flat detection dump becomes a structured diagnostic inventory,
+  `invocation`/`environment`/`runner` provenance, per-`ecosystems`
+  decisions with a `confidence` grade derived from the resolution step
+  (override/manifest/lockfile → high, PATH probe → medium, legacy npm
+  fallback → low, failure → none), task `sources` as first-class objects,
+  `fqn`-keyed `tasks` with effective `resolved` commands, PATH-probed
+  `tools`, duplicate-task-name `conflicts` (which task wins, which are
+  shadowed, and why), flattened `diagnostics`, and a self-describing
+  `resolution` policy block. Implements the former `doctor.v3-draft`
+  schema; the real output validates against both the committed
+  `doctor.v3.schema.json` and the original draft. Draft shapes nothing
+  can emit yet (rich dependency edges, workspace identity, probe errors)
+  are deferred, not declared. v1/v2 remain available via
+  `--schema-version`; human output is unchanged.
+- `runner why --json` schema **v3** (now the default for `why`): the
+  report is restructured around `{task, match}` candidate pairs plus a
+  `decision` block. Each task carries a stable identity
+  (`fqn` = `root:<kind>#<name>`, `provider`, `kind`, cargo aliases are
+  now labeled `cargo-alias`), its origin (`source` file,
+  `source_pointer` key path), and resolution data (`definition`,
+  `resolved` command preview, `cwd`, sibling `aliases`,
+  `dependencies`). The `match` half exposes the exact run-time selection
+  key (`source_priority`, `depth`, `display_order`, alias-last), and
+  `decision.strategy` names the branch taken (`single-candidate`,
+  `ranked`, `filtered`, `exec-fallback`). Implements the former
+  `why.v3-draft` example, which the real output now reproduces verbatim;
+  v1/v2 stay available via `--schema-version`. `list` remains at v2, its
+  v3 draft is still under review, and it rejects `--schema-version 3`
+  rather than mislabel output. `schema --all` emits the committed
+  `schemas/why.v3.schema.json`, and the example validates against it.
+- Both v3 schemas use the `<scope>:<kind>#<name>` fqn form, with `#`
+  separating the structured prefix from the verbatim task name so a name
+  containing `:` (e.g. an npm script `fmt:update`) stays unambiguous.
+- Deno tasks now run without the `deno` binary. A `deno.json` /
+  `deno.jsonc` task whose command is a leaf shell command executes
+  in-process via the embedded `deno_task_shell` (deno's own cross-platform
+  task shell) when `deno` isn't on `PATH`; with `deno` installed it still
+  shells out to `deno task` for full fidelity. The `unstable-deno-exec`
+  feature flips the default to self-exec-first. Tasks that invoke `deno`
+  themselves or declare `dependencies` still need the binary. The shell
+  engine lives in a reusable `tool::shell` so other shell-string task
+  sources can build on it later.
+- Deno task descriptions. The object form
+  (`"build": { "command": "…", "description": "…" }`) is now parsed and
+  the description surfaces in `runner list` / `why` / `doctor`, alongside
+  the existing bare-string form.
+- `runner list` and the bare `runner` view now print a duplicate-name
+  conflict footer. When two sources define the same task name (e.g. a
+  `just` `run` recipe and `cargo run`), it names the source that
+  `runner run <name>` actually dispatches and the ones it shadows, using
+  the same precedence as dispatch, so a silently shadowed task no longer
+  goes unnoticed.
+
+### Changed
+
+- Cargo built-in aliases now fold under their canonical subcommand in
+  `runner list` and the bare `runner` view. `b`/`c`/`d`/`t`/`r`/`rm` are
+  shown as aliases of the promoted `build`/`check`/`doc`/`test`/`run`/
+  `remove` tasks (e.g. `test (t)`) instead of standing alone; both the
+  canonical name and the short form still dispatch. Aliases that carry
+  extra arguments (`bb`, `cl`, `rq`, …) keep their own rows. Promoting
+  `run`/`remove` can collide with a same-named `just`/other task; that
+  collision now surfaces in the conflict footer above rather than hiding.
+- `runner doctor --json` (v3) now probes package-manager and task-runner
+  versions via `<tool> --version` (previously only the Node runtime
+  carried a version), reports a per-task `self_executable` flag (true for
+  deno tasks runner can run through the embedded shell), and derives the
+  Deno tool's `required` from it. Node is included in `ecosystems` /
+  `tools` whenever a resolver or task signal implies it, not only when a
+  Node package manager was lockfile-detected.
+- The committed v3 schemas (`doctor.v3.schema.json`,
+  `why.v3.schema.json`) set `additionalProperties: false` throughout, so
+  validation catches stray or misspelled fields in real output instead of
+  silently accepting them.
+
+## [0.13.0] - 2026-06-12
+
+### Added
+
+- `runner doctor` (and `info --json`) now classify PATH-probe hits that
+  are Volta shims and resolve them to the real provisioned binary via
+  `volta which`: the `PATH probe` line shows
+  `npm=<shim> -> <real bin> (volta)`, or
+  `(volta shim, not provisioned)` when Volta fronts a tool it has no
+  version of. JSON gains an additive `signals.node.volta_shims` map
+  (omitted on hosts without Volta; no schema bump). Display only,
+  execution still spawns the shim, which performs Volta's per-project
+  version selection.
+
+### Changed
+
+- `runner install` now honors the `--pm`/`RUNNER_PM` override: when set,
+  only that package manager installs (previously the override was
+  ignored and every detected PM installed, e.g. a project with both
+  `bun.lock` and `deno.json` always ran `deno install` too, writing an
+  unwanted `deno.lock`). An override naming a PM that detection did not
+  find refuses the install with exit code 2. runner.toml
+  `[pm].node`/`[pm].python` continue to scope script dispatch only.
+- Invalid `--pm`/`RUNNER_PM`/`--runner`/`RUNNER_RUNNER` values now produce
+  a readable error: the message names the source that carried the value,
+  escapes control characters (no more raw ANSI codes), truncates long
+  garbage, and, when the value contains line breaks, hints that it
+  looks like captured command output with the correctly quoted PowerShell
+  spelling. (An unquoted `$env:RUNNER_PM=deno` executes deno and assigns
+  its REPL banner to the variable.)
+
+### Fixed
+
+- `runner doctor` no longer dies when a `RUNNER_*` override variable
+  holds an unparseable value, the condition it exists to diagnose. The
+  invalid value is ignored for the report and surfaced as an `env:`
+  warning (human output and the `warnings` array of `doctor --json`,
+  additively, no schema bump). Every other command, and an explicit bad
+  `--pm`/`--runner` flag even on doctor, still fails fast.
+- Node version constraints are now evaluated with real range semantics
+  (via the `semver` crate) instead of a prefix match that treated
+  `>=22.22.2` as `=22.22.2`. Operators (`>=`, `>`, `<=`, `<`, `=`),
+  caret/tilde ranges, space-separated AND comparators, `||` unions,
+  hyphen ranges, and `x` wildcards all match per node-semver rules, so
+  `engines.node: ">=22.22.2"` no longer warns on Node 22.22.3 or 25.9.0.
+  Bare versions (`.nvmrc` `20.11`) keep the stricter
+  prefix-at-segment-boundary behavior; unevaluable inputs (`lts/*`) fall
+  back to the previous prefix match.
+- Task dispatch now prepends every existing `node_modules/.bin` between
+  the project directory and the filesystem root (nearest first) to the
+  child's `PATH`, the way `npm run` / `pnpm run` / `bun run` do for
+  `package.json` scripts. Tools that runner spawns directly, `turbo`
+  for `turbo.json` tasks, and the bare-binary exec fallback, used to
+  inherit the shell's `PATH` unchanged, so a devDependency-only `turbo`
+  failed with `Error: No such file or directory (os error 2)` unless it
+  was also installed globally. On Windows, bare program names are
+  additionally re-resolved against those bin dirs with `PATHEXT`, since
+  `CreateProcessW` would never find the `.cmd` shims npm and pnpm
+  install there. Local bins now shadow global installs for the spawned
+  task and everything it launches, matching Node package-manager
+  semantics.
+- The no-argument project-info banner no longer leaks the Windows `.exe`
+  suffix in its title line (e.g. `run.exe 0.12.2`). It now shows the same
+  `run` / `runner` identity as `--version`, `--help`, and the `Usage:`
+  line. The banner had its own copy of the arg0-parsing helper that
+  skipped the `.exe` stripping done everywhere else; it now reuses the
+  canonical `bin_name_from_arg0`.
+- `runner man` now works on Windows under `--features man` builds. The
+  subcommand was gated `not(windows)`, so with `external_subcommand` in
+  play it silently degraded to task dispatch (`bun man` → "Script not
+  found") instead of rendering. Rendering is pure `clap_mangen` with no
+  OS-specific code, so the gate bought nothing and is gone.
+- `install.sh` runs under any POSIX `sh`. It carried a `#!/usr/bin/env
+  bash` shebang, but `curl … | sh` ignores the shebang, so the bash-only
+  `set -o pipefail` aborted on line 2 under dash/busybox, the default
+  `/bin/sh` on the `-musl` targets. Rewritten POSIX-clean. It also picks
+  the install dir more intelligently now: reuse an already-installed
+  runner's directory (verified by its `-V` banner, so a system `run`/
+  `runner` is never clobbered), otherwise prefer `~/bin` or
+  `~/.local/bin` already on `PATH` (then one that exists), falling back
+  to `~/.local/bin`.
+
+## [0.12.2] - 2026-06-10
+
+### Fixed
+
+- `runner completions` now detects PowerShell when `$SHELL` is unset or
+  unrecognized by falling back to the presence of `$PSModulePath`, which
+  pwsh exports on every platform (it never sets `$SHELL`). A recognized
+  `$SHELL` still takes precedence, so a pwsh session launched from bash
+  keeps completing for the login shell. Previously bare
+  `runner completions` always errored under pwsh.
+
+## [0.12.1] - 2026-06-04
+
+### Added
+
+- `pyproject.toml` `[project.scripts]` entry points (PEP 621 console
+  scripts) are now extracted as runnable tasks for Python projects. They
+  surface under the `pyproject.toml` source in `runner list` (with the
+  entry-point target shown as the description) and dispatch via the
+  detected Python package manager's `run` subcommand, `uv run <name>`,
+  `poetry run <name>`, or `pipenv run <name>`. Previously a uv/poetry
+  project's declared scripts were invisible to `runner`, which detected
+  the package manager but listed no tasks.
 - AUR distribution channel. Two packages on the Arch User Repository:
   `runner-run-bin` (prebuilt binaries for `x86_64`, `aarch64`, `armv7h`)
   and `runner-run` (source build for `x86_64`, `aarch64`). `-bin`
-  `provides`/`conflicts` `runner-run`, so install whichever you prefer —
+  `provides`/`conflicts` `runner-run`, so install whichever you prefer,
   https://aur.archlinux.org/packages/runner-run-bin and
   https://aur.archlinux.org/packages/runner-run.
 - Shell completions shipped by both AUR packages and auto-loaded from
@@ -51,7 +1824,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   `/usr/share/fish/vendor_completions.d/{runner,run}.fish`. PowerShell
   on Linux has no autoload convention, so the pwsh script is installed
   at `/usr/share/runner/runner.ps1` for users to dot-source from their
-  `$PROFILE`. Completions are clap-dynamic — the shell shells out to
+  `$PROFILE`. Completions are clap-dynamic; the shell shells out to
   the binary for candidates, so tab-completing in a project picks up
   the *current* task list from `package.json` / `turbo.json` /
   `Justfile` / etc., not a static snapshot.
@@ -68,6 +1841,13 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   limitation). Strict semver regex on the version input refuses
   anything containing `&`, `/`, `\`, or newlines before any `sed`
   runs.
+- Man pages for `runner`, `run`, and each subcommand. Rendered from the
+  clap command tree by a `man` subcommand gated behind the `man`
+  feature (off by default, never in the shipped binary, never committed)
+  and shipped by every channel: crates.io (in the published crate), npm
+  (facade `man` field), both AUR packages (`/usr/share/man/man1/`), and a
+  `runner-<tag>-man.tar.gz` GitHub release asset that `install.sh` and
+  `runner-run-bin` pull from. `man runner` / `man run` work everywhere.
 
 ### Security
 
@@ -75,16 +1855,29 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   and `release.yml` pinned to commit SHAs (with a `# vN` trailing
   comment for readability), so an upstream tag rewrite or
   account-takeover cannot silently swap in a different action build.
-- `persist-credentials: false` added to the two `actions/checkout`
-  steps in `release.yml` that were missing it (`create-release`,
-  `upload-assets`), matching the hardening already in place on the
-  other checkouts.
+- `persist-credentials: false` added to every `actions/checkout` step
+  in `release.yml`, so `GITHUB_TOKEN` is not persisted into git config.
+- Release verification no longer saves Rust caches from pull request
+  runs, preventing untrusted PRs from persisting cache contents.
 
-### Post-release checklist
+### Fixed
 
-- [ ] Move completed `Unreleased` items into a new version section.
-- [ ] Update the `[Unreleased]` compare link to the new tag.
-- [ ] Create and push a signed `vX.Y.Z` tag from `master`.
+- `runner list`, `runner run`, and `runner why` now find
+  `pyproject.toml` scripts and Python package-manager signals from
+  nested directories (bounded by the containing VCS root), so running
+  from `src/` inside a uv/poetry/pipenv project still surfaces and
+  dispatches `[project.scripts]` tasks.
+- `runner why` now reports Python package-manager resolution for
+  `pyproject.toml` tasks, including `--pm` and `[pm].python`
+  overrides, matching the actual `runner run` dispatch path.
+- `runner list --source` invalid-label help now includes
+  `pyproject.toml` in the accepted source list.
+- Restore the `multiple_crate_versions` Clippy allow so CI accepts the
+  current unavoidable duplicate transitive crate versions while keeping
+  the broader `clippy::cargo` deny group enabled.
+- Hide the feature-only `runner man` generator from shipped `runner.1`
+  output, so installed man pages no longer document an unavailable
+  subcommand.
 
 ## [0.12.0] - 2026-06-01
 
@@ -97,12 +1890,12 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   `[github].group_output` in `runner.toml` (default `true`).
 - Grouped parallel (`-p`) output. Each task's stdout/stderr is captured
   and printed as one contiguous `runner: <task>` block when that task
-  finishes (completion order — first done, first shown), instead of
+  finishes (completion order, first done, first shown), instead of
   interleaving lines live. Under GitHub Actions the block is a `::group::`
   section; elsewhere it gets a plain colored header. Defaults diverge by
   environment so CI and local can differ: `[github].group_parallel`
   (default `true`, only when `[github].group_output` is also `true`)
-  governs runs under GitHub Actions, `[parallel].grouped` (default
+  governs runs under GitHub Actions; `[parallel].grouped` (default
   `false`) governs runs elsewhere. Opting out on either path restores the
   live `[<task>]`-prefixed multiplexer.
 - `[github]` and `[parallel]` sections in `runner.toml`, reflected in the
@@ -127,13 +1920,13 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   exit code reflecting the first failure. `--kill-on-fail`
   (parallel only) terminates siblings immediately when one fails.
   `-k` and `--kill-on-fail` are mutually exclusive across CLI,
-  env, and config — conflicting layers surface
+  env, and config; conflicting layers surface
   `ResolveError::ConflictingFailurePolicy` with the offending
   source named.
 - `[chain]` section in `runner.toml` plus `RUNNER_KEEP_GOING` /
   `RUNNER_KILL_ON_FAIL` env-var mirrors. Same resolver-chain
   precedence as the rest of the policy knobs: CLI > env > config.
-  Env layer is presence-authoritative — `RUNNER_KEEP_GOING=0`
+  Env layer is presence-authoritative; `RUNNER_KEEP_GOING=0`
   overrides `[chain].keep_going = true` in config, not just the
   default.
 - Line-prefix multiplexer for parallel chain output. Each task's
@@ -187,7 +1980,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 ### Added
 
 - mise task extraction and dispatch. `mise` was previously
-  detection-only — `runner` listed it under "Task Runners" but its
+  detection-only; `runner` listed it under "Task Runners" but its
   tasks were invisible to `runner list` and `runner run <task>`.
   New `TaskSource::MiseToml` makes mise a first-class source: tasks
   declared in `mise.toml` / `.mise.toml` (and the `*.local.toml`,
@@ -195,7 +1988,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   documented precedence) appear in listings, participate in the
   selection priority, and dispatch via `mise run <task>`.
 - Bacon-style two-tier extraction for mise. Primary path shells
-  out to `mise tasks --json` — authoritative across mise's config
+  out to `mise tasks --json`, authoritative across mise's config
   layering and file-based tasks (`mise-tasks/*`); fallback parses
   the first project-local config when `mise` isn't on `$PATH`.
   Both paths exclude hidden tasks (`hide = true`),
@@ -219,7 +2012,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   `ctx.root` before it considers the canonical Node order.
   Without that evidence the resolver returns the existing soft
   `NoSignalsFound` sentinel and `cmd::run::run_pm_exec_fallback`
-  spawns the target directly on `$PATH` — no more wrong-ecosystem
+  spawns the target directly on `$PATH`, no more wrong-ecosystem
   dispatch.
 
 ## [0.9.0] - 2026-05-13
@@ -227,10 +2020,10 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 ### Added
 
 - Unified package-manager resolution chain. `runner run` now follows a
-  documented 8-step precedence — qualified syntax → `--pm` / `--runner`
+  documented 8-step precedence, qualified syntax → `--pm` / `--runner`
   → `RUNNER_PM` / `RUNNER_RUNNER` → `runner.toml` → `package.json`
   (`packageManager` then `devEngines.packageManager`) → lockfile →
-  `PATH` probe → terminal error — making toolchain selection
+  `PATH` probe → terminal error, making toolchain selection
   predictable across Corepack, antfu/ni, mise, and pnpm v11+
   conventions. New `src/resolver/` module owns the chain end-to-end.
 - `--pm` / `--runner` global flags with `RUNNER_PM` / `RUNNER_RUNNER`
@@ -284,7 +2077,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 ### Changed
 
 - `Task.passthrough_to_turbo: bool` replaced by `Task.passthrough_to:
-  Option<TaskRunner>` so wrappers around any runner — not just turbo —
+  Option<TaskRunner>` so wrappers around any runner, not just turbo,
   can be attributed at detection time and used by completion.
 - `cmd::run::run` signature now takes a `&ResolutionOverrides` so the
   resolver-chosen PM also flows through the no-task fallback paths
@@ -333,7 +2126,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   `_` are treated as private and hidden. When the `bacon` CLI is on
   `PATH`, extraction shells out to `bacon --list-jobs` so bacon's built-in
   jobs (`check`, `clippy`, `test`, …) merge into the listing alongside
-  whatever `bacon.toml` declares — same view bacon itself presents. Falls
+  whatever `bacon.toml` declares, same view bacon itself presents. Falls
   back to TOML parsing when bacon isn't installed. Job arguments forward
   through bacon's `--` separator (`runner run test -- --ignored` →
   `bacon test -- --ignored`) so they reach the underlying job intact.
@@ -342,7 +2135,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - `cargo binstall runner-run` support via `[package.metadata.binstall]` in
   `Cargo.toml`. cargo-binstall now downloads the prebuilt binary from the
   matching GitHub release asset (`runner-v{version}-{target}.tar.gz`)
-  instead of building from source — same archives
+  instead of building from source, same archives
   `taiki-e/upload-rust-binary-action` uploads from `release.yml`. Both
   `runner` and `run` install side by side, no toolchain required.
 
@@ -353,14 +2146,14 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   fires in parallel with binary builds and no longer waits on the npm
   publish chain to complete first. `release.yml` gains a final
   `publish-release` job that flips the draft GitHub release to
-  published once binaries and the `npm-dist` artifact land — this is
+  published once binaries and the `dist` artifact land; this is
   now the natural pivot of the release lifecycle and drives
   `npm-release.yml` via `release: published`. `npm-release.yml`
   drops its `workflow_run` trigger (and the draft-flip side job that
   was hidden in it), resolving the build run-id for cross-workflow
   artifact download via `gh run list` instead. Net effect: tag push
   alone ships crates.io immediately, and the GH release auto-publishes
-  once binaries are ready — no more manual draft-flipping.
+  once binaries are ready, no more manual draft-flipping.
 - `npm/facade/README.md` updates the install fallback instructions to
   `cargo install runner-run` (crates.io) instead of the git-source
   form, matching the 0.7.1 README/landing-page change.
@@ -394,8 +2187,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   surfaced parse errors. The qualified-task syntax also accepts
   `turbo.jsonc:task` (and `deno.jsonc:task`, fixed in the same line for
   parity). Fixes #10.
-- Root Tasks in `turbo.json` — entries written with the `//#name`
-  prefix, invoked via `turbo run name` against the workspace root —
+- Root Tasks in `turbo.json`, entries written with the `//#name`
+  prefix, invoked via `turbo run name` against the workspace root,
   now surface in `runner list` under their bare name. Workspace-scoped
   entries (`pkg#task`) remain filtered, and the result set is
   deduplicated when both `name` and `//#name` are defined. Fixes #11.
@@ -531,7 +2324,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - `site/build.ts` `publicPath` precedence: the original
   `env["PUBLIC_PATH"] || isCI ? X : Y` parsed as
   `(... || ...) ? X : Y`, so a literal `PUBLIC_PATH` value never
-  reached `Bun.build` — it acted as a boolean toggle. The hardcoded
+  reached `Bun.build`; it acted as a boolean toggle. The hardcoded
   `runner.kjanat.com/` fallback also leaked into Cloudflare Workers
   preview deploys (`*.workers.dev`) and tripped CSP `'self'`,
   blocking every asset on every PR preview. Replaced with
@@ -544,7 +2337,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - `.github/scripts/build/package-release-asset.sh` writes checksum
   files as `<basename>.sha256` (not `<basename>.tar.gz.sha256`),
   matching `taiki-e/upload-rust-binary-action`'s convention and what
-  `verify-checksum.sh` enforces — the previous mismatch would have
+  `verify-checksum.sh` enforces; the previous mismatch would have
   broken the npm pipeline's checksum verification on release.
 - `npm/scripts/build-packages.ts`: `Target.build` union now covers
   all five schema enum values (previously only `cargo` | `cross`,
@@ -562,8 +2355,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   passthrough at detection time when its command body literally
   invokes `turbo run <name>` (or the shorthand `turbo <name>`) for
   a same-named target, optionally followed by flag tokens
-  (`--filter web`, `--concurrency=4`) or — after a bare `--`
-  end-of-options separator (POSIX/getopt convention) — args
+  (`--filter web`, `--concurrency=4`) or, after a bare `--`
+  end-of-options separator (POSIX/getopt convention), args
   forwarded to the underlying task; the full bash control set
   (`&&`, `||`, `;`, `;;`, `;&`, `;;&`, `|`, `|&`, `&`, `!`, `{`,
   `}`, `(`, `)`), fd-style redirects (bare `>`/`<`/`>>`/`<<<`,
@@ -572,8 +2365,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   `$X`/`${X}`/`${X:-def}`/`${X//a/b}`, special vars `$@`/`$*`/
   `$#`/`$?`, command substitution `$(cmd)` and backtick
   `` `cmd` ``, arithmetic `$((expr))`, double-quoted forms with
-  embedded expansion `"${X}"`) — including those positioned after
-  a value-expecting flag or after `--` — and extra positional
+  embedded expansion `"${X}"`), including those positioned after
+  a value-expecting flag or after `--`, and extra positional
   targets all reject the match so scripts that do real work
   beyond dispatching to turbo stay visible. Only thin passthroughs
   are dropped from completion when a same-named `turbo.json` task
@@ -678,7 +2471,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - `site/build.ts` `publicPath` precedence: the original
   `env["PUBLIC_PATH"] || isCI ? X : Y` parsed as
   `(... || ...) ? X : Y`, so a literal `PUBLIC_PATH` value never
-  reached `Bun.build` — it acted as a boolean toggle. The hardcoded
+  reached `Bun.build`; it acted as a boolean toggle. The hardcoded
   `runner.kjanat.com/` fallback also leaked into Cloudflare Workers
   preview deploys (`*.workers.dev`) and tripped CSP `'self'`,
   blocking every asset on every PR preview. Replaced with
@@ -691,7 +2484,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - `.github/scripts/build/package-release-asset.sh` writes checksum
   files as `<basename>.sha256` (not `<basename>.tar.gz.sha256`),
   matching `taiki-e/upload-rust-binary-action`'s convention and what
-  `verify-checksum.sh` enforces — the previous mismatch would have
+  `verify-checksum.sh` enforces; the previous mismatch would have
   broken the npm pipeline's checksum verification on release.
 - `npm/scripts/build-packages.ts`: `Target.build` union now covers
   all five schema enum values (previously only `cargo` | `cross`,
@@ -709,8 +2502,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   passthrough at detection time when its command body literally
   invokes `turbo run <name>` (or the shorthand `turbo <name>`) for
   a same-named target, optionally followed by flag tokens
-  (`--filter web`, `--concurrency=4`) or — after a bare `--`
-  end-of-options separator (POSIX/getopt convention) — args
+  (`--filter web`, `--concurrency=4`) or, after a bare `--`
+  end-of-options separator (POSIX/getopt convention), args
   forwarded to the underlying task; the full bash control set
   (`&&`, `||`, `;`, `;;`, `;&`, `;;&`, `|`, `|&`, `&`, `!`, `{`,
   `}`, `(`, `)`), fd-style redirects (bare `>`/`<`/`>>`/`<<<`,
@@ -719,8 +2512,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   `$X`/`${X}`/`${X:-def}`/`${X//a/b}`, special vars `$@`/`$*`/
   `$#`/`$?`, command substitution `$(cmd)` and backtick
   `` `cmd` ``, arithmetic `$((expr))`, double-quoted forms with
-  embedded expansion `"${X}"`) — including those positioned after
-  a value-expecting flag or after `--` — and extra positional
+  embedded expansion `"${X}"`), including those positioned after
+  a value-expecting flag or after `--`, and extra positional
   targets all reject the match so scripts that do real work
   beyond dispatching to turbo stay visible. Only thin passthroughs
   are dropped from completion when a same-named `turbo.json` task
@@ -832,7 +2625,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   - `npm.sh` validates `optionalDependencies` in `publish_allowed`:
     the façade must list every required platform under the scope at
     exactly `EXPECTED_VERSION`, and platform sub-packages must declare
-    none — closing a vector where a tampered platform package could
+    none, closing a vector where a tampered platform package could
     smuggle attacker-controlled transitive deps.
   - `npm view` and `npm publish` are wrapped in `timeout 120s` with
     explicit `124` handling so a hung registry cannot burn the full
@@ -860,7 +2653,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   user's prompt. The completer function now scopes `NULL_GLOB` via
   `emulate -L zsh -o NULL_GLOB`, so globs evaluated by `_files`
   internals or user zstyles (e.g. specs tagged `globbed-files`)
-  silently drop when they match nothing — fixing both the
+  silently drop when they match nothing, fixing both the
   `no matches found: *:globbed-files` error under the default
   `NOMATCH`, and the subsequent `*(/)` / `*(-/)` residue that would
   otherwise appear on the command line under `NO_NOMATCH` when
@@ -939,7 +2732,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   `run` alias binary.
 - Remove the `tool::deno::exec_cmd` and `tool::cargo_pm::exec_cmd` helpers:
   `deno run <target>` treats the target as a local script, and
-  `cargo <target>` dispatches to a cargo subcommand/plugin — neither runs
+  `cargo <target>` dispatches to a cargo subcommand/plugin; neither runs
   arbitrary package binaries like `npx` does. `runner run <target>` in a
   Deno- or Cargo-only project now spawns `<target>` directly via `PATH`.
 
@@ -1020,7 +2813,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - Auto-detect shell from `$SHELL` when no completion argument is given.
 - `description` field on `Task`, threaded from justfile doc comments and
   go-task `desc` fields into completion candidates.
-- Tag-grouped zsh completions — candidates render under section headers
+- Tag-grouped zsh completions, candidates render under section headers
   (e.g. `-- justfile --`, `-- Commands --`) via custom `_describe` adapter.
 
 ### Changed
@@ -1043,7 +2836,35 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - `run` alias binary for shorter invocation.
 - Unified commands for task run/list, dependency install, clean, and exec.
 
-[Unreleased]: https://github.com/kjanat/runner/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/kjanat/runner/compare/v0.27.0...HEAD
+[0.27.0]: https://github.com/kjanat/runner/compare/v0.26.2...v0.27.0
+[0.26.2]: https://github.com/kjanat/runner/compare/v0.26.1...v0.26.2
+[0.26.1]: https://github.com/kjanat/runner/compare/v0.26.0...v0.26.1
+[0.26.0]: https://github.com/kjanat/runner/compare/v0.25.1...v0.26.0
+[0.25.1]: https://github.com/kjanat/runner/compare/v0.25.0...v0.25.1
+[0.25.0]: https://github.com/kjanat/runner/compare/v0.24.1...v0.25.0
+[0.24.1]: https://github.com/kjanat/runner/compare/v0.24.0...v0.24.1
+[0.24.0]: https://github.com/kjanat/runner/compare/v0.23.0...v0.24.0
+[0.23.0]: https://github.com/kjanat/runner/compare/v0.22.0...v0.23.0
+[0.22.0]: https://github.com/kjanat/runner/compare/v0.21.0...v0.22.0
+[0.21.0]: https://github.com/kjanat/runner/compare/v0.20.0...v0.21.0
+[0.20.0]: https://github.com/kjanat/runner/compare/v0.19.1...v0.20.0
+[0.19.1]: https://github.com/kjanat/runner/compare/v0.19.0...v0.19.1
+[0.19.0]: https://github.com/kjanat/runner/compare/v0.18.1...v0.19.0
+[0.18.1]: https://github.com/kjanat/runner/compare/v0.18.0...v0.18.1
+[0.18.0]: https://github.com/kjanat/runner/compare/v0.17.0...v0.18.0
+[0.17.0]: https://github.com/kjanat/runner/compare/v0.16.1...v0.17.0
+[0.16.1]: https://github.com/kjanat/runner/compare/v0.16.0...v0.16.1
+[0.16.0]: https://github.com/kjanat/runner/compare/v0.15.0...v0.16.0
+[0.15.0]: https://github.com/kjanat/runner/compare/v0.14.3...v0.15.0
+[0.14.3]: https://github.com/kjanat/runner/compare/v0.14.2...v0.14.3
+[0.14.2]: https://github.com/kjanat/runner/compare/v0.14.1...v0.14.2
+[0.14.1]: https://github.com/kjanat/runner/compare/v0.14.0...v0.14.1
+[0.14.0]: https://github.com/kjanat/runner/compare/v0.13.1...v0.14.0
+[0.13.1]: https://github.com/kjanat/runner/compare/v0.13.0...v0.13.1
+[0.13.0]: https://github.com/kjanat/runner/compare/v0.12.2...v0.13.0
+[0.12.2]: https://github.com/kjanat/runner/compare/v0.12.1...v0.12.2
+[0.12.1]: https://github.com/kjanat/runner/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/kjanat/runner/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/kjanat/runner/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/kjanat/runner/compare/v0.9.0...v0.10.0
@@ -1063,5 +2884,4 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 [0.2.0]: https://github.com/kjanat/runner/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/kjanat/runner/releases/tag/v0.1.0
 
-<!-- markdownlint-disable-file no-duplicate-heading MD034 -->
-<!-- rumdl-disable-file MD013 MD024 MD034 -->
+<!-- markdownlint-disable-file no-duplicate-heading MD013 MD024 MD034 -->

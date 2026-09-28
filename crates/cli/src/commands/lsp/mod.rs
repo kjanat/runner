@@ -1,0 +1,362 @@
+//! `runner lsp`, a Language Server for `runner.toml`.
+//!
+//! Speaks LSP over stdio and provides three editor features, each reusing the
+//! same internals the CLI does:
+//! - **diagnostics**: the exact `runner config validate` pipeline ([`crate::config`]
+//!   + [`crate::resolver::config_issues`]), mapped to ranges;
+//! - **hover**: section/field documentation pulled from the generated JSON
+//!   Schema (i.e. the `RunnerConfig` doc comments);
+//! - **completion**: section names, field names, and value sets (enums, booleans,
+//!   and the runner/package-manager/source label vocabulary).
+//!
+//! The server is deliberately small and synchronous (one document at a time,
+//! full-text sync); runner.toml files are tiny, so there is no need for
+//! incremental sync or a background analysis thread.
+
+mod analysis;
+mod diagnostics;
+mod schema_index;
+mod syntax;
+mod text;
+
+use std::collections::HashMap;
+
+use anyhow::Result;
+use lsp_server::{Connection, Message, Notification, Request, Response};
+use lsp_types::notification::{
+    DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Notification as _,
+};
+use lsp_types::request::{Completion, HoverRequest, Request as _};
+use lsp_types::{
+    CompletionOptions, CompletionParams, CompletionResponse, HoverParams, HoverProviderCapability,
+    PublishDiagnosticsParams, ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind,
+    Uri,
+};
+use serde_json::Value;
+
+use crate::config::CONFIG_FILENAME;
+
+use self::schema_index::SchemaIndex;
+use self::text::LineIndex;
+
+/// Run the language server to completion over stdio. Returns the process exit
+/// code (`0` on a clean shutdown).
+pub(crate) fn run() -> Result<i32> {
+    let (connection, io_threads) = Connection::stdio();
+    let capabilities = serde_json::to_value(server_capabilities())?;
+    let initialize_params = connection.initialize(capabilities)?;
+
+    let mut server = Server {
+        documents: HashMap::new(),
+        schema: SchemaIndex::build(),
+        snippets: client_supports_snippets(initialize_params),
+    };
+    server.serve(&connection)?;
+
+    // Drop the connection before joining: the writer thread only terminates
+    // once its channel sender (held by `connection`) is gone; otherwise
+    // `join` blocks forever.
+    drop(connection);
+    io_threads.join()?;
+    Ok(0)
+}
+
+/// The server's declared capabilities: full-text sync, hover, and completion
+/// (triggered on the characters that begin a section, key value, or label).
+fn server_capabilities() -> ServerCapabilities {
+    ServerCapabilities {
+        text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
+        hover_provider: Some(HoverProviderCapability::Simple(true)),
+        completion_provider: Some(CompletionOptions {
+            trigger_characters: Some(
+                ["[", "=", "\"", " ", ".", ","]
+                    .iter()
+                    .map(|s| (*s).to_string())
+                    .collect(),
+            ),
+            ..CompletionOptions::default()
+        }),
+        ..ServerCapabilities::default()
+    }
+}
+
+/// Open-document store plus the cached schema documentation.
+struct Server {
+    /// Text of every open document, keyed by URI (full-sync, so always current).
+    documents: HashMap<Uri, String>,
+    /// Section/field documentation, built once at startup.
+    schema: SchemaIndex,
+    /// Whether the client declared completion snippet support at initialize.
+    snippets: bool,
+}
+
+/// Whether the client's initialize params declare completion snippet support.
+fn client_supports_snippets(initialize_params: Value) -> bool {
+    serde_json::from_value::<lsp_types::InitializeParams>(initialize_params)
+        .ok()
+        .and_then(|params| params.capabilities.text_document)
+        .and_then(|text_document| text_document.completion)
+        .and_then(|completion| completion.completion_item)
+        .and_then(|item| item.snippet_support)
+        .unwrap_or(false)
+}
+
+impl Server {
+    /// Main message loop. Returns when the client completes the shutdown/exit
+    /// handshake (the receiver closes).
+    fn serve(&mut self, connection: &Connection) -> Result<()> {
+        for message in &connection.receiver {
+            match message {
+                Message::Request(request) => {
+                    if connection.handle_shutdown(&request)? {
+                        return Ok(());
+                    }
+                    self.handle_request(connection, request)?;
+                }
+                Message::Notification(notification) => {
+                    self.handle_notification(connection, notification)?;
+                }
+                Message::Response(_) => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// Answer a hover/completion request; unknown methods get a null result so
+    /// the client isn't left waiting.
+    fn handle_request(&self, connection: &Connection, request: Request) -> Result<()> {
+        let method = request.method.clone();
+        let response = match method.as_str() {
+            HoverRequest::METHOD => {
+                let (id, params) = request.extract::<HoverParams>(HoverRequest::METHOD)?;
+                Response::new_ok(id, self.hover(&params))
+            }
+            Completion::METHOD => {
+                let (id, params) = request.extract::<CompletionParams>(Completion::METHOD)?;
+                Response::new_ok(id, CompletionResponse::Array(self.completion(&params)))
+            }
+            _ => Response::new_ok(request.id, Value::Null),
+        };
+        connection.sender.send(Message::Response(response))?;
+        Ok(())
+    }
+
+    /// Apply a document-sync notification and (re)publish diagnostics.
+    fn handle_notification(
+        &mut self,
+        connection: &Connection,
+        notification: Notification,
+    ) -> Result<()> {
+        let method = notification.method.clone();
+        match method.as_str() {
+            DidOpenTextDocument::METHOD => {
+                let params = notification
+                    .extract::<lsp_types::DidOpenTextDocumentParams>(DidOpenTextDocument::METHOD)?;
+                let uri = params.text_document.uri;
+                self.documents
+                    .insert(uri.clone(), params.text_document.text);
+                self.publish_diagnostics(connection, &uri);
+            }
+            DidChangeTextDocument::METHOD => {
+                let mut params = notification.extract::<lsp_types::DidChangeTextDocumentParams>(
+                    DidChangeTextDocument::METHOD,
+                )?;
+                // Full sync: the last change carries the whole document.
+                if let Some(change) = params.content_changes.pop() {
+                    let uri = params.text_document.uri;
+                    self.documents.insert(uri.clone(), change.text);
+                    self.publish_diagnostics(connection, &uri);
+                }
+            }
+            DidCloseTextDocument::METHOD => {
+                let params = notification.extract::<lsp_types::DidCloseTextDocumentParams>(
+                    DidCloseTextDocument::METHOD,
+                )?;
+                let uri = params.text_document.uri;
+                self.documents.remove(&uri);
+                // Clear diagnostics for the closed file.
+                send_diagnostics(connection, uri, Vec::new());
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn publish_diagnostics(&self, connection: &Connection, uri: &Uri) {
+        let diagnostics = self
+            .documents
+            .get(uri)
+            .filter(|_| is_runner_toml(uri))
+            .map_or_default(|text| diagnostics::compute(text, &LineIndex::new(text)));
+        send_diagnostics(connection, uri.clone(), diagnostics);
+    }
+
+    fn hover(&self, params: &HoverParams) -> Option<lsp_types::Hover> {
+        let pos = params.text_document_position_params.position;
+        let uri = &params.text_document_position_params.text_document.uri;
+        let text = self.documents.get(uri).filter(|_| is_runner_toml(uri))?;
+        analysis::hover(&LineIndex::new(text), &self.schema, text, pos)
+    }
+
+    fn completion(&self, params: &CompletionParams) -> Vec<lsp_types::CompletionItem> {
+        let pos = params.text_document_position.position;
+        let uri = &params.text_document_position.text_document.uri;
+        let Some(text) = self.documents.get(uri).filter(|_| is_runner_toml(uri)) else {
+            return Vec::new();
+        };
+        analysis::completion(
+            &LineIndex::new(text),
+            &self.schema,
+            text,
+            pos,
+            document_dir(uri).as_deref(),
+            self.snippets,
+        )
+    }
+}
+
+/// The document's directory for a `file:` URI, anchoring project-task
+/// discovery. Non-file URIs (or a rootless path) yield `None`.
+fn document_dir(uri: &Uri) -> Option<std::path::PathBuf> {
+    if uri.scheme().is_some_and(|s| s.as_str() != "file") {
+        return None;
+    }
+    // Percent-decode: clients encode spaces and non-ASCII in file URIs.
+    let decoded = uri
+        .path()
+        .as_estr()
+        .decode()
+        .into_string_lossy()
+        .into_owned();
+    // `file:///C:/x` decodes to `/C:/x`; strip the slash so the drive form
+    // reads absolute on Windows (on unix it then fails is_absolute → None).
+    let path = decoded
+        .strip_prefix('/')
+        .filter(|rest| {
+            rest.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
+                && rest.as_bytes().get(1) == Some(&b':')
+        })
+        .unwrap_or(&decoded);
+    let path = std::path::Path::new(path);
+    path.parent()
+        .filter(|parent| parent.is_absolute())
+        .map(std::path::Path::to_path_buf)
+}
+
+/// Whether `uri`'s basename is `runner.toml` or its dotfile form, at any depth,
+/// because each directory can hold its own config.
+fn is_runner_toml(uri: &Uri) -> bool {
+    uri.path().as_str().rsplit('/').next().is_some_and(|name| {
+        name == CONFIG_FILENAME || name.strip_prefix('.') == Some(CONFIG_FILENAME)
+    })
+}
+
+/// Send a `publishDiagnostics` notification for `uri`.
+fn send_diagnostics(connection: &Connection, uri: Uri, diagnostics: Vec<lsp_types::Diagnostic>) {
+    let params = PublishDiagnosticsParams {
+        uri,
+        diagnostics,
+        version: None,
+    };
+    if let Ok(params) = serde_json::to_value(params) {
+        let _ = connection.sender.send(Message::Notification(Notification {
+            method: lsp_types::notification::PublishDiagnostics::METHOD.to_string(),
+            params,
+        }));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use lsp_types::Uri;
+
+    use super::document_dir;
+
+    #[test]
+    fn document_dir_takes_the_file_uri_parent() {
+        let uri = Uri::from_str("file:///home/user/proj/runner.toml").expect("uri");
+        assert_eq!(
+            document_dir(&uri).as_deref(),
+            Some(std::path::Path::new("/home/user/proj"))
+        );
+    }
+
+    #[test]
+    fn document_dir_percent_decodes_the_path() {
+        let uri = Uri::from_str("file:///home/user/my%20proj/runner.toml").expect("uri");
+        assert_eq!(
+            document_dir(&uri).as_deref(),
+            Some(std::path::Path::new("/home/user/my proj"))
+        );
+    }
+
+    #[test]
+    fn document_dir_decodes_non_ascii_segments() {
+        // `ø` percent-encoded as UTF-8 (%C3%B8).
+        let uri = Uri::from_str("file:///home/user/pr%C3%B8j/runner.toml").expect("uri");
+        assert_eq!(
+            document_dir(&uri).as_deref(),
+            Some(std::path::Path::new("/home/user/prøj"))
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn document_dir_normalizes_a_windows_drive_uri() {
+        let uri = Uri::from_str("file:///C:/Users/user/proj/runner.toml").expect("uri");
+        assert_eq!(
+            document_dir(&uri).as_deref(),
+            Some(std::path::Path::new("C:/Users/user/proj"))
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn document_dir_rejects_a_windows_drive_uri_off_windows() {
+        // The stripped drive form (`C:/...`) is not absolute on unix.
+        let uri = Uri::from_str("file:///C:/Users/user/proj/runner.toml").expect("uri");
+        assert_eq!(document_dir(&uri), None);
+    }
+
+    #[test]
+    fn document_dir_rejects_non_file_schemes() {
+        let uri = Uri::from_str("untitled:Untitled-1").expect("uri");
+        assert_eq!(document_dir(&uri), None);
+    }
+
+    #[test]
+    fn snippet_support_reads_the_nested_capability() {
+        let params = serde_json::json!({
+            "capabilities": {
+                "textDocument": {
+                    "completion": { "completionItem": { "snippetSupport": true } }
+                }
+            }
+        });
+        assert!(super::client_supports_snippets(params));
+    }
+
+    #[test]
+    fn snippet_support_defaults_to_false_when_absent() {
+        let params = serde_json::json!({ "capabilities": {} });
+        assert!(!super::client_supports_snippets(params));
+        let explicit_false = serde_json::json!({
+            "capabilities": {
+                "textDocument": {
+                    "completion": { "completionItem": { "snippetSupport": false } }
+                }
+            }
+        });
+        assert!(!super::client_supports_snippets(explicit_false));
+    }
+
+    #[test]
+    fn snippet_support_tolerates_malformed_params() {
+        assert!(!super::client_supports_snippets(serde_json::json!(
+            "not initialize params"
+        )));
+        assert!(!super::client_supports_snippets(serde_json::Value::Null));
+    }
+}

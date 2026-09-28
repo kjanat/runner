@@ -1,0 +1,53 @@
+{
+	"name": "runner-run",
+	"description": "Universal project task runner. Auto-detects toolchain, provides unified CLI.",
+	"keywords": [
+		"automation",
+		"build-tool",
+		"cli",
+		"completions",
+		"tab",
+		"task-runner",
+		"monorepo",
+		"turbo",
+		"make",
+		"just",
+		"taskfile"
+	],
+	"homepage": "https://runner.kjanat.dev",
+	"bugs": "https://github.com/kjanat/runner/issues",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/kjanat/runner.git"
+	},
+	"license": "MIT",
+	"author": "Kaj Kowalski <info+runner@kajkowalski.nl>",
+	"type": "module",
+	"imports": {
+		"#launch": "./lib/launch.cjs",
+		"#pkg": "./package.json",
+		"#quiet": "./lib/quiet.cjs",
+		"#resolve": "./lib/resolve.cjs"
+	},
+	"exports": {
+		"./package.json": "./package.json"
+	},
+	"bin": {
+		"run": "bin/run.cjs",
+		"runner": "bin/runner.cjs",
+		"runner-run": "bin/runner.cjs"
+	},
+	"directories": {
+		"lib": "./lib"
+	},
+	"files": [
+		"bin/",
+		"lib/",
+		"README.md",
+		"LICENSE"
+	],
+	"dependencies": {
+		"ansispeck": "^0.4.1"
+	},
+	"optionalDependencies": {}
+}

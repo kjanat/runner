@@ -1,22 +1,18 @@
 # https://just.systems
 set unstable
 
-cargo-version := `cargo read-manifest | jq -r .version`
-triple := `rustc --print host-tuple`
-default-member := `cargo metadata --format-version 1 --no-deps | jq -r '.workspace_default_members[0]'`
-npm-pkg-name := `cargo metadata --format-version 1 --no-deps | jq -r --arg id "$(cargo metadata --format-version 1 --no-deps | jq -r '.workspace_default_members[0]')" '.packages[] | select(.id == $id).metadata.npm.name'`
-npm-pkg-scope := `cargo metadata --format-version 1 --no-deps | jq -r --arg id "$(cargo metadata --format-version 1 --no-deps | jq -r '.workspace_default_members[0]')" '.packages[] | select(.id == $id).metadata.npm.subpkgscope'`
-build-pkgscript := "npm" / "scripts" / "build-packages.ts"
-downloads-dir := "npm" / "downloads"
+# Version/triple live in recipe parameter defaults (evaluated per invocation), not globals; just evaluates globals on every run.
+build-pkgscript := "packaging" / "npm" / "scripts" / "build-packages.ts"
+downloads-dir := "packaging" / "npm" / "downloads"
+targets-json := "packaging" / "npm" / "targets.json"
+
+schema-dir := "schemas"
 
 [arg('bin', pattern='run|runner')]
 [arg('profile', pattern='dev|release|')]
 [group('bins')]
 default bin=env("BIN", "runner") profile="dev" *args:
     env PROFILE={{ profile }} just {{ bin }} {{ args }}
-
-install:
-    cargo i
 
 [group('bins')]
 run *args:
@@ -29,23 +25,25 @@ runner *args:
 ls:
     @just --list
 
-# Regenerate the committed JSON Schema for `runner.toml`.
-#
-# Runs the `gen-schema` example under the `schema-gen` feature, which
-# derives a draft-2020-12 schema from `RunnerConfig` + its section
-# structs via `schemars`. The example writes the result to
-# `schemas/runner.toml.schema.json`; commit the diff if anything
-# moved.
-#
-# CI drift guard:
-# just gen-schema && git diff --exit-code schemas/
+# Shell lint at the strictest level, matching CI. -o all enables the optional
+# checks; default severity misses SC231x entirely.
+[group('lint')]
+lint-sh:
+    shellcheck -x -o all .github/scripts/*.sh install.sh
+
+# Regenerate the committed JSON Schemas.
+# Drift guard: just gen-schema && git diff --exit-code schemas/
 [group('schema')]
 gen-schema:
-    @echo "→ regenerating {{ BLUE }}schemas/runner.toml.schema.json{{ NORMAL }}"
-    @cargo run --quiet --example gen-schema --features schema-gen
+    @echo "→ regenerating {{ BLUE }}{{ schema-dir }}{{ NORMAL }}"
+    @cargo schema --all --output {{ schema-dir }}
 
 [group('npm')]
-build-packages only="" skip="false" version=cargo-version:
+test-facade:
+    bun run test:facade
+
+[group('npm')]
+build-packages only="" skip="false" version=`cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "runner-run") | .version'`:
     #!/usr/bin/env bash
     set -euo pipefail
     args=("--version" "{{ version }}")
@@ -55,12 +53,26 @@ build-packages only="" skip="false" version=cargo-version:
     node {{ build-pkgscript }} "${args[@]}"
     echo "✓ built packages for {{ MAGENTA }}{{ version }}{{ NORMAL }}"
 
-# Build release bin and verify the facade shims spawn the native binary.
-[group('npm')]
-test-release version=cargo-version host-triple=triple:
+# Build the distribution image locally. Never pushes; needs packaging/npm/dist
+# populated by `just build-packages` or a downloaded dist artifact. Defaults to
+# the host arch; passing several needs a container-driver buildx builder.
+[group('docker')]
+docker-image version=`cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "runner-run") | .version'` platforms="":
     #!/usr/bin/env bash
     set -euo pipefail
-    pkg="$(jq -r --arg t '{{ host-triple }}' '.targets[] | select(.rust == $t) | .pkg' npm/targets.json)"
+    echo "→ preparing context for {{ MAGENTA }}{{ version }}{{ NORMAL }}"
+    bash .github/scripts/docker.sh prepare
+    echo "→ building {{ BLUE }}{{ platforms }}{{ NORMAL }}"
+    TAGS="runner:{{ version }}" PLATFORMS="{{ platforms }}" PUSH=false \
+        bash .github/scripts/docker.sh build
+    echo "✓ built {{ MAGENTA }}runner:{{ version }}{{ NORMAL }}"
+
+# Build release bin, pack the npm artifacts, and smoke-test them like CI.
+[group('npm')]
+test-release version=`cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "runner-run") | .version'` host-triple=`rustc --print host-tuple`:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    pkg="$(jq -r --arg t '{{ host-triple }}' '.targets[] | select(.rust == $t) | .pkg' {{ targets-json }})"
     if [[ -z "${pkg}" ]]; then
         echo "✗ no npm package mapped for host triple: {{ host-triple }}" >&2
         exit 1
@@ -83,18 +95,6 @@ test-release version=cargo-version host-triple=triple:
         -C target/release "${files[@]}"
     just build-packages "${pkg}" "true" "{{ version }}"
 
-    # Wire optional sub-package so resolve.cjs's require.resolve walks
-    # node_modules and finds it. In a real install, npm does this.
-    subpkgdir="npm/dist/{{ npm-pkg-name }}/node_modules/{{ npm-pkg-scope }}"
-    mkdir -p "${subpkgdir}"
-    ln -sfn "../../../${pkg}" "${subpkgdir}/${pkg}"
-
-    for bin in runner run; do
-        output="$(node "npm/dist/{{ npm-pkg-name }}/bin/${bin}.cjs" --version)"
-        echo "→ {{ BLUE }}${bin} --version{{ NORMAL }}	output: {{ GREEN }}${output}{{ NORMAL }}"
-        if [[ "${output}" != *"{{ version }}"* ]]; then
-            echo "✗ ${bin}.cjs did not output version {{ version }}"
-            exit 1
-        fi
-    done
-    echo "✓ facade resolved native bin for {{ MAGENTA }}${pkg}{{ NORMAL }}"
+    # Same pack-install-execute smoke CI runs before npm publish.
+    RELEASE_TAG="v{{ version }}" HOST_PKG="${pkg}" bash .github/scripts/npm.sh smoke
+    echo "✓ smoke passed for {{ MAGENTA }}${pkg}{{ NORMAL }}"
