@@ -30,7 +30,7 @@
 		"@types/bun": "^1.4",
 		"@types/node": ">=22.18.0",
 		"dprint": "^0.57.4",
-		"runner-run": "npm:runner-run@^0.26",
+		"runner-run": "npm:runner-run@^0.27",
 		"typescript": "^7",
 		"wrangler": "^4"
 	}
