@@ -1,49 +1,120 @@
 name: crates publish
 description: >-
-  Publish one workspace crate to crates.io, resumably: an already-published
-  version is skipped via the sparse index, and 429 rate limits — crates.io
-  refills the new-crate-name allowance roughly once per ten minutes — are
-  absorbed by waiting and retrying instead of failing the release.
+  Publish the verified workspace crates to crates.io in dependency order,
+  resumably: a version crates.io already has is skipped when its checksum
+  matches the verified archive, and 429 rate limits are waited out.
 
 inputs:
-  source-dir:
-    description: directory holding the checked-out source to operate on
-    required: false
-    default: "."
-  crate:
-    description: crate to publish
-    required: true
-  version:
-    description: the version being published (tag without the v prefix)
-    required: true
-  proof-dir: { description: Verified package archives and report from setup, required: true }
-  tag: { description: Release tag bound to the verification report, required: true }
-  helper-sha: { description: Helper commit bound to the verification report, required: true }
-  token:
-    description: OIDC-minted crates.io token, used for a crate crates.io already has
-    required: false
-    default: ""
-  bootstrap-token:
-    description: crates.io API token, used only for a crate crates.io does not have yet
-    required: false
-    default: ""
-  retry-wait:
-    description: seconds to wait after a 429 before retrying
-    required: false
-    default: "630"
+  source-dir: { description: Release source checkout, required: true }
+  proof-dir: { description: Verified archives and verification.json from crates-verify, required: true }
+  crates: { description: "crates-verify's `crates` output, in publish order", required: true }
+  version: { description: The version being published (tag without the v prefix), required: true }
+  token: { description: "OIDC-minted crates.io token, used for a crate crates.io already has", required: false, default: "" }
+  bootstrap-token: { description: "crates.io API token, used only for a crate crates.io does not have yet", required: false, default: "" }
+  retry-wait: { description: Seconds to wait after a 429 before retrying, required: false, default: "630" }
 
 runs:
   using: composite
   steps:
     - shell: bash
+      working-directory: ${{ inputs.source-dir }}
       env:
-        SOURCE_DIR: ${{ inputs.source-dir }}
+        PROOF_DIR: ${{ inputs.proof-dir }}
+        CRATES: ${{ inputs.crates }}
+        VERSION: ${{ inputs.version }}
         MINTED_TOKEN: ${{ inputs.token }}
         BOOTSTRAP_TOKEN: ${{ inputs.bootstrap-token }}
-        CRATE: ${{ inputs.crate }}
-        VERSION: ${{ inputs.version }}
-        PROOF_DIR: ${{ inputs.proof-dir }}
-        RELEASE_TAG: ${{ inputs.tag }}
-        HELPER_SHA: ${{ inputs.helper-sha }}
         RETRY_WAIT: ${{ inputs.retry-wait }}
-      run: bash "${GITHUB_ACTION_PATH}/run.sh"
+      run: |
+        set -euo pipefail
+        : "${PROOF_DIR:?}" "${CRATES:?}" "${VERSION:?}" "${RETRY_WAIT:?}"
+        readonly report="${PROOF_DIR}/verification.json"
+        readonly max_retries=8
+        # Index propagation of a just-published dependency is seconds, not minutes.
+        readonly propagation_wait=30
+
+        # Prints "yes" when the index has crate@VERSION with the verified checksum,
+        # "new" when crates.io has no version of the crate, "no" otherwise, and
+        # fails when the index holds crate@VERSION with a different checksum.
+        # Names here are all >= 4 chars, so the index path is <name[0..2]>/<name[2..4]>/<name>.
+        index_state() {
+        	local crate="$1" body code want have
+        	body="$(mktemp)"
+        	code=$(curl -s --connect-timeout 10 --max-time 30 --retry 4 --output "${body}" --write-out '%{http_code}' \
+        		"https://index.crates.io/${crate:0:2}/${crate:2:2}/${crate}")
+        	case "${code}" in
+        		404)
+        			echo new
+        			return 0
+        			;;
+        		200) ;;
+        		*)
+        			echo "error: sparse index returned HTTP ${code} for ${crate}" >&2
+        			return 1
+        			;;
+        	esac
+        	have=$(jq -r --arg v "${VERSION}" 'select(.vers == $v) | .cksum' "${body}")
+        	if [[ -z "${have}" ]]; then
+        		echo no
+        		return 0
+        	fi
+        	want=$(jq -r --arg c "${crate}" '.crates[] | select(.crate == $c) | .sha256' "${report}")
+        	if [[ "${have}" != "${want}" ]]; then
+        		echo "error: crates.io has ${crate}@${VERSION} with checksum ${have}, not the verified ${want}" >&2
+        		return 1
+        	fi
+        	echo yes
+        }
+
+        publish() {
+        	local crate="$1" state attempt=0 status output
+        	state=$(index_state "${crate}")
+        	case "${state}" in
+        		yes)
+        			echo "skip ${crate}@${VERSION}: already on crates.io with the verified checksum"
+        			return 0
+        			;;
+        		# Trusted publishing cannot create a crate.
+        		new) export CARGO_REGISTRY_TOKEN="${BOOTSTRAP_TOKEN:?${crate} is new on crates.io and needs the bootstrap token}" ;;
+        		*) export CARGO_REGISTRY_TOKEN="${MINTED_TOKEN:?${crate} needs the trusted-publishing token}" ;;
+        	esac
+        	while true; do
+        		attempt=$((attempt + 1))
+        		status=0
+        		# crates-verify already built every extracted package.
+        		output=$(cargo publish -p "${crate}" --locked --all-features --allow-dirty --registry crates-io --no-verify 2>&1) || status=$?
+        		printf '%s\n' "${output}"
+        		if [[ "${status}" -eq 0 ]]; then
+        			echo "published ${crate}@${VERSION}"
+        			return 0
+        		fi
+        		if grep -Eiq 'already uploaded|already exists' <<<"${output}"; then
+        			state=$(index_state "${crate}")
+        			if [[ "${state}" == yes ]]; then
+        				echo "skip ${crate}@${VERSION}: published concurrently with the verified checksum"
+        				return 0
+        			fi
+        			echo "error: ${crate}@${VERSION} exists on crates.io but the index does not show it yet" >&2
+        			return 1
+        		fi
+        		if [[ "${attempt}" -ge "${max_retries}" ]]; then
+        			echo "error: publishing ${crate} failed after ${attempt} attempts" >&2
+        			return 1
+        		fi
+        		if grep -Eiq '429|too many crates|rate limit' <<<"${output}"; then
+        			echo "rate limited on ${crate} (attempt ${attempt}/${max_retries}); waiting ${RETRY_WAIT}s"
+        			sleep "${RETRY_WAIT}"
+        		elif grep -Eiq 'no matching package named' <<<"${output}"; then
+        			echo "dependency not in index yet for ${crate} (attempt ${attempt}/${max_retries}); waiting ${propagation_wait}s"
+        			sleep "${propagation_wait}"
+        		else
+        			echo "error: publishing ${crate} failed" >&2
+        			return 1
+        		fi
+        	done
+        }
+
+        crates=$(jq -r '.[].crate' <<<"${CRATES}")
+        for crate in ${crates}; do
+        	publish "${crate}"
+        done
