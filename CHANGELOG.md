@@ -19,6 +19,17 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - [ ] Minor bumps: after publish, raise the `runner-run` catalog range to `^0.Y` and refresh `bun.lock`; `@latest` breaks `--frozen-lockfile`.
 - [ ] First release with `runner-run-core`, `runner-run-schemes` and `runner-run-providers`: add a `CARGO_REGISTRY_TOKEN` secret to the `crates-io` environment, release, then add a trusted publisher for each (workflow `release.yml`, environment `crates-io`) and delete the secret.
 
+### Changed
+
+- Marketing site (<https://runner.kjanat.dev>) rewritten as a
+  SvelteKit 2 / Svelte 5 prerendered static app on Cloudflare. Seven
+  composable section components, build-time CHANGELOG.md ingestion
+  via a SvelteKit server-load + Vite `?raw` import, ESLint with the
+  Svelte plugin, and a prerender-output validation suite
+  (freshness-aware in CI). Added `[package.metadata.site].default-
+  branch` so the footer changelog link and installer-script URL
+  share one source.
+
 ## [0.27.0] - 2026-09-27
 
 ### Added

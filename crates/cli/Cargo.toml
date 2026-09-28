@@ -27,6 +27,14 @@ pkg-url = "{repo}/releases/download/v{version}/runner-v{version}-{target}{archiv
 pkg-fmt = "tgz"
 bin-dir = "{bin}{binary-ext}"
 
+[package.metadata.site]
+# Single source of truth for the marketing site. The default-branch
+# value is interpolated into both the footer "changelog" link and the
+# `linuxInstaller` raw-githubusercontent URL — so a future branch
+# rename is a one-line fix here, not a search-and-replace across the
+# site tree. Parsed by site/scripts/site-data.ts.
+default-branch = "master"
+
 [package.metadata.npm]
 name        = "runner-run"
 subpkgscope = "@runner-run"

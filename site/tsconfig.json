@@ -1,27 +1,22 @@
 {
+	"extends": "./.svelte-kit/tsconfig.json",
 	"compilerOptions": {
-		"target": "ESNext",
-		"module": "Preserve",
-		"moduleResolution": "bundler",
-		"lib": ["ESNext", "DOM", "DOM.Iterable"],
-		"types": ["bun"],
-
-		"strict": true,
-		"noImplicitAny": true,
-		"noUncheckedIndexedAccess": true,
-		"exactOptionalPropertyTypes": true,
-		"noImplicitOverride": true,
-		"noFallthroughCasesInSwitch": true,
-
-		"allowImportingTsExtensions": true,
-		"resolveJsonModule": true,
+		"allowJs": true,
+		"checkJs": true,
 		"esModuleInterop": true,
 		"forceConsistentCasingInFileNames": true,
+		"resolveJsonModule": true,
 		"skipLibCheck": true,
-
-		"noEmit": true,
-		"isolatedModules": true,
-		"verbatimModuleSyntax": true
+		"sourceMap": true,
+		"strict": true,
+		"moduleResolution": "bundler"
 	},
-	"exclude": ["node_modules", "dist", ".wrangler"]
+	"exclude": [
+		"dist",
+		"build",
+		"scripts",
+		".svelte-kit/output",
+		".wrangler",
+		"node_modules"
+	]
 }

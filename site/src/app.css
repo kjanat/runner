@@ -1,0 +1,262 @@
+/* Global stylesheet — reduced to ONLY what cannot be component-scoped:
+ *  - design tokens + colour scheme
+ *  - element resets / base typography
+ *  - shared utility classes used by multiple components
+ *    (.section-tag, .tagline, .meta, .install, hr.rule)
+ *  - the entire .term* terminal theme: Demo/Completion inject their
+ *    transcripts via {@html}, and Svelte scoped styles never reach
+ *    {@html} content, so these MUST stay global.
+ * Component-unique rules live in each component's scoped <style>. */
+
+:root {
+	--bg: #f4ede1;
+	--ink: #0e0e0e;
+	--dim: #5a5a52;
+	--moss: #3d5a36;
+	--tomato: #d94e2c;
+	--rule: #1a1a1a14;
+	--term-bg: #0a0a0a;
+	--term-fg: #e5e5e5;
+	--term-dim: color-mix(in srgb, var(--term-fg) 70%, var(--term-bg));
+	--term-bold: #fff;
+	--term-green: #a3cf95;
+	--term-red: #f47a59;
+	--mono: ui-monospace, Menlo, Consolas, monospace;
+	--radius-sm: 2px;
+	--radius-md: 4px;
+	--ring-width: 2px;
+	--ring-offset: 3px;
+	--dur-fast: 80ms;
+	--dur-base: 120ms;
+	--lh-base: 1.55;
+	--ls-caps: 0.16em;
+	--text-micro: 0.7rem;
+	--text-xs: 0.75rem;
+	color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+	:root {
+		--bg: #221d15;
+		--ink: #f4ecd9;
+		--dim: #c0b8a8;
+		--moss: #a3cf95;
+		--tomato: #f47a59;
+		--rule: #ffffff40;
+	}
+}
+*,
+*::before,
+*::after {
+	box-sizing: border-box;
+}
+html,
+body {
+	overflow-x: hidden;
+}
+body {
+	margin: 0;
+	font-family: var(--mono);
+	font-size: 1rem;
+	line-height: var(--lh-base);
+	color: var(--ink);
+	background: var(--bg);
+}
+code {
+	padding: 0.05em 0.35em;
+	color: var(--ink);
+	background: color-mix(in srgb, var(--ink) 7%, transparent);
+	border-radius: var(--radius-sm);
+	-webkit-user-select: all;
+	user-select: all;
+}
+::selection {
+	color: var(--bg);
+	background: var(--ink);
+}
+.term ::selection {
+	color: var(--term-bg);
+	background: var(--tomato);
+}
+a {
+	color: var(--moss);
+	text-underline-offset: 0.18em;
+}
+a:hover {
+	color: var(--bg);
+	background: var(--moss);
+}
+a:focus-visible {
+	outline: var(--ring-width) solid var(--tomato);
+	outline-offset: var(--ring-offset);
+}
+a:focus-visible:hover {
+	color: var(--moss);
+	background: transparent;
+}
+.visually-hidden {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	padding: 0;
+	margin: -1px;
+	overflow: hidden;
+	white-space: nowrap;
+	border: 0;
+	clip-path: inset(50%);
+}
+main {
+	max-width: 72ch;
+	padding: 4rem 1.5rem 6rem;
+	margin: 0 auto;
+}
+h1,
+h2,
+h3 {
+	margin: 0;
+	font-weight: 700;
+}
+.wordmark {
+	margin: 0;
+	font-size: clamp(3.25rem, 11vw, 6.5rem);
+	font-weight: 700;
+	line-height: 0.95;
+	letter-spacing: -0.045em;
+}
+.wordmark::after {
+	color: var(--tomato);
+	content: "_";
+	animation: idle-double-blink 11s steps(1) infinite;
+}
+@keyframes idle-double-blink {
+	0%,
+	90% {
+		opacity: 1;
+	}
+	91% {
+		opacity: 0;
+	}
+	92% {
+		opacity: 1;
+	}
+	93% {
+		opacity: 0;
+	}
+	94%,
+	100% {
+		opacity: 1;
+	}
+}
+.tagline {
+	max-width: 52ch;
+	margin: 1.25rem 0 0;
+	font-size: 1.0625rem;
+}
+.meta {
+	margin: 0.75rem 0 0;
+	font-size: 0.875rem;
+	color: var(--dim);
+}
+.meta a {
+	color: var(--dim);
+}
+.meta a:hover {
+	color: var(--bg);
+}
+hr.rule {
+	margin: 3rem 0 2rem;
+	border: 0;
+	border-top: 1px solid var(--rule);
+}
+.section-tag {
+	display: block;
+	margin: 0 0 0.75rem;
+	font-size: var(--text-xs);
+	/* Real <h2> now; the global `h1, h2, h3 { font-weight: 700 }` rule
+	 * would otherwise bold the dim caps label. */
+	font-weight: 400;
+	color: var(--dim);
+	text-transform: uppercase;
+	letter-spacing: var(--ls-caps);
+}
+.install {
+	display: grid;
+	grid-template-columns: 1fr;
+	gap: 0.625rem;
+	margin: 0.75rem 0 0;
+}
+.term {
+	padding: 1.1rem 1.25rem 1.4rem;
+	margin: 0;
+	overflow-x: auto;
+	font-size: 0.875rem;
+	line-height: var(--lh-base);
+	color: var(--term-fg);
+	white-space: pre;
+	background: var(--term-bg);
+	border: 1px solid var(--rule);
+	border-radius: var(--radius-md);
+}
+.install + .term {
+	margin-top: 1.25rem;
+}
+.term .prompt {
+	color: var(--term-dim);
+}
+.term .prompt::before {
+	color: var(--term-dim);
+	content: "$ ";
+}
+.term .dim {
+	color: var(--term-dim);
+}
+.term .bold {
+	font-weight: 700;
+	color: var(--term-bold);
+}
+.term .green {
+	font-weight: 700;
+	color: var(--term-green);
+}
+.term .link {
+	color: var(--term-fg);
+	text-decoration: underline;
+	text-underline-offset: 0.2em;
+	background: transparent;
+}
+.term .link:hover {
+	color: var(--term-bold);
+	background: transparent;
+}
+.term .arrow {
+	color: var(--term-dim);
+}
+.term .cursor {
+	display: inline-block;
+	width: 0.6em;
+	color: transparent;
+	background: var(--term-fg);
+	animation: blink 1.05s steps(1) 5;
+}
+@keyframes blink {
+	50% {
+		opacity: 0;
+	}
+}
+@media (prefers-reduced-motion: reduce) {
+	.wordmark::after,
+	.term .cursor {
+		animation: none;
+	}
+}
+@media (max-width: 40rem) {
+	main {
+		padding: 2.5rem 1.1rem 4rem;
+	}
+	.term {
+		padding: 0.9rem 1rem 1.1rem;
+		font-size: 0.78rem;
+	}
+	hr.rule {
+		margin: 2rem 0 1.25rem;
+	}
+}
