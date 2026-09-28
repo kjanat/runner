@@ -16,7 +16,7 @@ inputs:
 runs:
   using: composite
   steps:
-    - shell: bash
+    - shell: "bash -euo pipefail {0}"
       working-directory: ${{ inputs.source-dir }}
       env:
         PROOF_DIR: ${{ inputs.proof-dir }}
@@ -26,7 +26,6 @@ runs:
         BOOTSTRAP_TOKEN: ${{ inputs.bootstrap-token }}
         RETRY_WAIT: ${{ inputs.retry-wait }}
       run: |
-        set -euo pipefail
         : "${PROOF_DIR:?}" "${CRATE:?}" "${VERSION:?}" "${RETRY_WAIT:?}"
         readonly report="${PROOF_DIR}/verification.json"
         readonly max_retries=2
