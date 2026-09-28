@@ -28,6 +28,14 @@ runs:
       run: |
         : "${PROOF_DIR:?}" "${CRATE:?}" "${VERSION:?}" "${RETRY_WAIT:?}"
         readonly report="${PROOF_DIR}/verification.json"
+        head=$(git rev-parse HEAD)
+        verified=$(jq -r .source_sha "${report}")
+        metadata=$(cargo metadata --no-deps --format-version 1)
+        target=$(jq -r .target_directory <<<"${metadata}")
+        if [[ "${head}" != "${verified}" ]]; then
+        	echo "error: the release checkout is not the source crates-verify verified" >&2
+        	exit 1
+        fi
         readonly max_retries=2
         # Index propagation of a just-published dependency is seconds, not minutes.
         readonly propagation_wait=30
@@ -77,6 +85,15 @@ runs:
         		new) export CARGO_REGISTRY_TOKEN="${BOOTSTRAP_TOKEN:?${crate} is new on crates.io and needs the bootstrap token}" ;;
         		*) export CARGO_REGISTRY_TOKEN="${MINTED_TOKEN:?${crate} needs the trusted-publishing token}" ;;
         	esac
+        	local archive want have
+        	cargo package -p "${crate}" --locked --all-features --allow-dirty --registry crates-io --no-verify
+        	archive="${target}/package/${crate}-${VERSION}.crate"
+        	have=$(sha256sum "${archive}")
+        	want=$(jq -r --arg c "${crate}" '.crates[] | select(.crate == $c) | .sha256' "${report}")
+        	if [[ "${have%% *}" != "${want}" ]]; then
+        		echo "error: ${crate} packages to ${have%% *}, not the verified ${want}" >&2
+        		return 1
+        	fi
         	while true; do
         		attempt=$((attempt + 1))
         		status=0
