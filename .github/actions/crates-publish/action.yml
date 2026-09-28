@@ -1,13 +1,13 @@
 name: crates publish
 description: >-
-  Publish the verified workspace crates to crates.io in dependency order,
-  resumably: a version crates.io already has is skipped when its checksum
-  matches the verified archive, and 429 rate limits are waited out.
+  Publish one verified workspace crate to crates.io, resumably: a version
+  crates.io already has is skipped when its checksum matches the verified
+  archive, and 429 rate limits are waited out.
 
 inputs:
   source-dir: { description: Release source checkout, required: true }
   proof-dir: { description: Verified archives and verification.json from crates-verify, required: true }
-  crates: { description: "crates-verify's `crates` output, in publish order", required: true }
+  crate: { description: Crate to publish, required: true }
   version: { description: The version being published (tag without the v prefix), required: true }
   token: { description: "OIDC-minted crates.io token, used for a crate crates.io already has", required: false, default: "" }
   bootstrap-token: { description: "crates.io API token, used only for a crate crates.io does not have yet", required: false, default: "" }
@@ -20,14 +20,14 @@ runs:
       working-directory: ${{ inputs.source-dir }}
       env:
         PROOF_DIR: ${{ inputs.proof-dir }}
-        CRATES: ${{ inputs.crates }}
+        CRATE: ${{ inputs.crate }}
         VERSION: ${{ inputs.version }}
         MINTED_TOKEN: ${{ inputs.token }}
         BOOTSTRAP_TOKEN: ${{ inputs.bootstrap-token }}
         RETRY_WAIT: ${{ inputs.retry-wait }}
       run: |
         set -euo pipefail
-        : "${PROOF_DIR:?}" "${CRATES:?}" "${VERSION:?}" "${RETRY_WAIT:?}"
+        : "${PROOF_DIR:?}" "${CRATE:?}" "${VERSION:?}" "${RETRY_WAIT:?}"
         readonly report="${PROOF_DIR}/verification.json"
         readonly max_retries=8
         # Index propagation of a just-published dependency is seconds, not minutes.
@@ -114,7 +114,4 @@ runs:
         	done
         }
 
-        crates=$(jq -r '.[].crate' <<<"${CRATES}")
-        for crate in ${crates}; do
-        	publish "${crate}"
-        done
+        publish "${CRATE}"

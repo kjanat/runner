@@ -59,13 +59,14 @@ jobs:
           if-no-files-found: error
 
   publish:
-    name: publish to crates.io
+    name: publish ${{ matrix.crate }}
     needs: setup
     if: inputs.dry-run != true
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 90
     permissions: { contents: read, id-token: write, actions: read }
-    environment: { name: crates-io, url: "https://crates.io/crates/runner-run/${{ needs.setup.outputs.version }}" }
+    environment: { name: crates-io, url: "https://crates.io/crates/${{ matrix.crate }}/${{ needs.setup.outputs.version }}" }
+    strategy: { max-parallel: 1, fail-fast: true, matrix: { include: "${{ fromJSON(needs.setup.outputs.crates) }}" } }
     steps:
       - uses: actions/checkout@v7
         with: { ref: "refs/tags/${{ env.RELEASE_TAG }}", persist-credentials: false, path: source }
@@ -75,11 +76,11 @@ jobs:
         uses: actions/download-artifact@v8
         with: { artifact-ids: "${{ needs.setup.outputs.artifact_id }}", path: "${{ env.PROOF_DIR }}", merge-multiple: true }
       - name: download man pages
-        if: env.RUN_ID != ''
+        if: matrix.crate == 'runner-run' && env.RUN_ID != ''
         uses: actions/download-artifact@v8
         with: { name: man-pages, path: "${{ env.MAN_DIR }}", run-id: "${{ env.RUN_ID }}", github-token: "${{ github.token }}" }
       - name: build man pages
-        if: env.RUN_ID == ''
+        if: matrix.crate == 'runner-run' && env.RUN_ID == ''
         working-directory: source
         run: cargo man --output "${GITHUB_WORKSPACE}/${MAN_DIR}"
       - name: mint crates.io token (trusted publishing)
@@ -91,7 +92,7 @@ jobs:
         with:
           source-dir: source
           proof-dir: ${{ env.PROOF_DIR }}
-          crates: ${{ needs.setup.outputs.crates }}
+          crate: ${{ matrix.crate }}
           version: ${{ needs.setup.outputs.version }}
           token: ${{ steps.auth.outputs.token }}
           bootstrap-token: ${{ secrets.CARGO_REGISTRY_TOKEN }}
