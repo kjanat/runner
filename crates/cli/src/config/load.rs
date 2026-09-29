@@ -196,6 +196,53 @@ pub(crate) struct OutputSettings {
     /// Parallel chains.
     #[serde(default, skip_serializing_if = "ParallelOutput::is_empty")]
     pub parallel: ParallelOutput,
+    /// Final stderr replay in GitHub Actions. Live stderr is never delayed.
+    #[serde(default, skip_serializing_if = "ReplayOutput::is_empty")]
+    pub replay: ReplayOutput,
+}
+
+/// `[output.replay]`: failed tasks are plain when only one failed, grouped
+/// otherwise. Successful tasks are not repeated unless requested.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema,
+)]
+#[schemars(deny_unknown_fields)]
+pub(crate) struct ReplayOutput {
+    #[serde(default)]
+    pub failure: FailureReplay,
+    #[serde(default)]
+    pub success: SuccessReplay,
+}
+
+impl ReplayOutput {
+    // serde calls skip_serializing_if with a reference.
+    #[allow(clippy::trivially_copy_pass_by_ref)]
+    fn is_empty(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum FailureReplay {
+    #[default]
+    Auto,
+    Grouped,
+    Plain,
+    Off,
+}
+
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum SuccessReplay {
+    Grouped,
+    Plain,
+    #[default]
+    Off,
 }
 
 impl OutputSettings {
@@ -209,8 +256,8 @@ impl OutputSettings {
 #[schemars(deny_unknown_fields)]
 pub(crate) struct ParallelOutput {
     /// Hold each parallel task's output and print it as one block when the
-    /// task ends. Unset, runner buffers under GitHub Actions and interleaves
-    /// prefixed lines elsewhere.
+    /// task ends outside Actions. Actions always streams live output and uses
+    /// `[output.replay]` for the final stderr recap.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub buffer: Option<bool>,
 }
@@ -229,7 +276,8 @@ pub(crate) struct TaskOutput {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(extend("default" = true))]
     pub progress: Option<bool>,
-    /// Wrap a task's output in a collapsible GitHub Actions group.
+    /// Enable the final stderr recap in GitHub Actions, and parallel task
+    /// prefixes or block headers on a terminal outside Actions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(extend("default" = true))]
     pub groups: Option<bool>,
@@ -641,7 +689,10 @@ stderr = true
         let project = keys("OutputSettings");
         assert!(task.iter().all(|key| project.contains(key)), "{project:?}");
         let extra: Vec<&String> = project.iter().filter(|key| !task.contains(key)).collect();
-        assert_eq!(extra, ["warnings", "errors", "summary", "parallel"]);
+        assert_eq!(
+            extra,
+            ["warnings", "errors", "summary", "parallel", "replay"]
+        );
         assert_eq!(
             schema["$defs"]["TaskSettings"]["properties"]["runtime"]["$ref"],
             schema["properties"]["runtime"]["$ref"]

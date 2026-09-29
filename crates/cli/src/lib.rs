@@ -71,6 +71,7 @@ mod detect;
 mod invocation;
 mod provider;
 mod render;
+mod replay;
 mod resolver;
 mod schema;
 mod tool;
@@ -1310,6 +1311,11 @@ fn dispatch(
             Ok(0)
         }
     };
+    if let Err(error) = overrides.replay.finish()
+        && overrides.shows_warnings()
+    {
+        eprintln!("warn: could not replay task output: {error}");
+    }
     apply_fatal_output_policy(result, &overrides)
 }
 

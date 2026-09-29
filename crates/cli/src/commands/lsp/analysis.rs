@@ -487,7 +487,11 @@ mod tests {
     #[test]
     fn dotted_header_completion_offers_only_the_parents_subtables() {
         let items = complete("[output.\n", 0, 8, false);
-        assert_eq!(labels(&items), ["parallel", "task", "tool"], "{items:?}");
+        assert_eq!(
+            labels(&items),
+            ["parallel", "replay", "task", "tool"],
+            "{items:?}"
+        );
     }
 
     #[test]

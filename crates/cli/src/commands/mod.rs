@@ -51,11 +51,8 @@ fn configure_spawn(
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
-    // Mark children (and, by env inheritance, all descendants) when this
-    // runner opens a GHA group around them, so a nested `runner`/`run`
-    // suppresses its own group. GHA groups don't nest. When we're already
-    // nested the marker is in our inherited env, so children get it for free.
-    if emits_group(overrides) {
+    // Descendants leave replay to their outer task, avoiding duplicate recaps.
+    if collects_replay(overrides) {
         command.env(GROUP_ACTIVE_ENV, "1");
     }
     // Same idea for warnings: this process has already printed (or suppressed)
@@ -80,7 +77,7 @@ fn configure_spawn(
 fn configure_task_streams(command: &mut Command, overrides: &ResolutionOverrides, task: &str) {
     let (stdout, stderr) = overrides.task_streams_for(task);
     print_output_explain(overrides, task);
-    if emits_group(overrides) && !overrides.emits_groups_for(task) {
+    if collects_replay(overrides) && !overrides.emits_groups_for(task) {
         command.env_remove(GROUP_ACTIVE_ENV);
     }
     set_task_stdio(command, stdout, stderr);
@@ -101,7 +98,7 @@ fn configure_plan(
     }
     let mut metadata = Command::new("runner");
     configure_spawn(&mut metadata, &plan.cwd, root, overrides);
-    if emits_group(overrides) && !overrides.emits_groups_for(task) {
+    if collects_replay(overrides) && !overrides.emits_groups_for(task) {
         metadata.env_remove(GROUP_ACTIVE_ENV);
     }
     for (key, value) in metadata.get_envs() {
@@ -314,20 +311,8 @@ pub(crate) fn exit_code(status: ExitStatus) -> i32 {
     status.code().unwrap_or(1)
 }
 
-/// Env marker a runner sets on its children when it is in GitHub Actions
-/// grouping mode ([`emits_group`]), so a nested `runner`/`run` (e.g. invoked
-/// through an `npm` script) detects it and stays silent instead of emitting a
-/// second `::group::` that would corrupt the parent's fold. Inherited
-/// transitively through intermediate processes; read into
-/// [`ResolutionOverrides::parent`].
-///
-/// The contract is "a parent is *collecting* your output, don't open your own
-/// group", which is slightly broader than "a literal `::group::` is open right
-/// now": it is also set in parallel-*streaming* mode, where the parent muxes
-/// child output behind a `[task] ` prefix instead of a group. Suppressing
-/// nested grouping is correct in every case; a nested group would otherwise
-/// either nest-and-corrupt (grouped) or render as inert prefixed text
-/// (streaming).
+/// Inherited marker that an ancestor is collecting this task's stderr. Keep
+/// the established variable name for compatibility with older nested runners.
 pub(crate) const GROUP_ACTIVE_ENV: &str = "RUNNER_GROUP_ACTIVE";
 
 /// Env marker carrying the project root whose detection warnings a parent
@@ -438,48 +423,19 @@ fn same_root(marked: &Path, root: &Path) -> bool {
     }
 }
 
-/// Whether a runner opens a GitHub Actions group: groups are on, it runs
-/// under GitHub Actions, and no parent runner already opened one, since
-/// GitHub Actions groups do not nest.
+/// Actions replay is enabled only in the outermost collecting runner.
 const fn group_emission(groups: bool, under_github_actions: bool, parent_group_open: bool) -> bool {
     groups && under_github_actions && !parent_group_open
 }
 
-/// Whether *this* runner emits a GitHub Actions group around its children:
-/// groups are on, we're under Actions, and a parent runner hasn't already
-/// opened one ([`ResolutionOverrides::parent`]). When true, the group-opening sites fire AND children are marked
-/// with [`GROUP_ACTIVE_ENV`] so a nested runner suppresses its own groups.
-/// When false, no group is opened (nested output flows into the parent's
-/// group, or grouping is off).
-///
-/// GitHub Actions reads `::group::`/`::endgroup::` off the child's own
-/// stdout, so a runner that decorates while `--quiet` is set corrupts any
-/// parent capturing that stdout (`npm pack --json` piped into a script).
-/// The markers cannot move to stderr instead: GitHub Actions does not
-/// preserve relative order between the two streams, so a fold opened there
-/// would close around the wrong lines.
-pub(crate) fn emits_group(overrides: &ResolutionOverrides) -> bool {
+/// Whether this invocation collects task stderr for a final Actions recap.
+/// The inherited marker prevents nested runners from replaying the same output.
+pub(crate) fn collects_replay(overrides: &ResolutionOverrides) -> bool {
     group_emission(
         overrides.emits_groups(),
         actions_rs::env::is_github_actions(),
         overrides.parent.group_open,
     )
-}
-
-/// Open a collapsible GitHub Actions log group titled `runner: {name}` when
-/// grouping is enabled (see [`emits_group`]).
-///
-/// The returned [`actions_rs::log::GroupGuard`] emits `::endgroup::` when it
-/// is dropped, including on the `?` error path and on panic, so callers
-/// just bind it for the duration of the run. Returns `None` (emitting
-/// nothing) when grouping is off, which lets callers hold it unconditionally.
-fn task_group(
-    overrides: &ResolutionOverrides,
-    name: &str,
-    task: &str,
-) -> Option<actions_rs::log::GroupGuard> {
-    (emits_group(overrides) && overrides.emits_groups_for(task))
-        .then(|| actions_rs::log::group_guard(format!("runner: {name}")))
 }
 
 /// Optional warning collector. `None` means "emit warnings to stderr
@@ -1112,6 +1068,7 @@ mod tests {
                 invocation,
                 project,
                 buffer: None,
+                replay: crate::config::ReplayOutput::default(),
             },
             ..ResolutionOverrides::default()
         };

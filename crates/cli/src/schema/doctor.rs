@@ -207,6 +207,7 @@ struct OutputReport {
     #[schemars(extend("enum" = ["normal", "quiet", "reduced"]))]
     tool: &'static str,
     parallel_buffer: Option<bool>,
+    replay: crate::config::ReplayOutput,
 }
 
 #[derive(schemars::JsonSchema, Debug, Serialize)]
@@ -733,6 +734,7 @@ fn overrides_report(overrides: &ResolutionOverrides) -> Overrides {
             runner: output.runner,
             tool: output.tool.label(),
             parallel_buffer: overrides.output.buffer,
+            replay: overrides.output.replay,
         },
         pm: overrides
             .pm
@@ -1552,8 +1554,14 @@ mod tests {
     fn every_resolution_overrides_field_is_reported_or_excluded() {
         // `package` names one invocation's binary, `parent` is runner-to-runner
         // plumbing and `config` is the file path the report already carries.
-        // `root_command_hints` selects command hints, not a configurable override.
-        const EXCLUDED: &[&str] = &["package", "parent", "config", "root_command_hints"];
+        // `root_command_hints` selects command hints; `replay` holds captured output.
+        const EXCLUDED: &[&str] = &[
+            "package",
+            "parent",
+            "config",
+            "root_command_hints",
+            "replay",
+        ];
         // Resolver field name -> name it's actually reported under.
         const RENAMED: &[(&str, &str)] = &[("quiet_level", "output")];
 
@@ -1574,6 +1582,7 @@ mod tests {
             runtime,
             quiet_level,
             output,
+            replay,
             dry_run,
             failure_policy,
             script_policy,

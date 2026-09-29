@@ -278,6 +278,21 @@ annotations follow `[output] errors` and the roll-up follows `[output]
 summary`, so `groups = false` keeps both. `-q` hides the roll-up and `-qqq`
 the annotations.
 
+In GitHub Actions, task stdout stays undecorated, including in parallel chains.
+Task stderr remains live and is copied to temporary storage for a final replay
+after the whole invocation finishes. One failed task is replayed plainly;
+multiple failures get separate groups titled `task — exit N`. A failure without
+stderr still gets a line naming the task and exit code. Successful tasks are not
+replayed by default.
+
+`[output.replay] failure = "auto"` selects that behavior; `"grouped"`, `"plain"`
+and `"off"` override it. `success` accepts `"grouped"`, `"plain"` and `"off"`.
+These settings affect replay only, never live stderr. `[output] groups = false`
+and `-q` disable replay altogether. Explicit task stream suppression still
+applies. Replayed workflow commands are rendered as inert text, so annotations
+and other side effects are not executed twice. Outside Actions there is no
+automatic replay.
+
 ### Quiet, all the way down
 
 `-q` is a preset over the individual `[output]` settings:
@@ -604,7 +619,7 @@ warnings = true
 errors   = true  # runner's error text; a failed command still fails
 summary  = true  # the roll-up after a chain
 progress = true  # the `→ source task` line
-groups   = true  # GitHub Actions groups
+groups   = true  # final Actions replay; terminal prefixes outside Actions
 timing   = true  # each chain task's timing line
 
 [output.tool]
@@ -615,7 +630,11 @@ stdout = true  # false discards the task's stdout
 stderr = true
 
 [output.parallel]
-buffer = false  # print each parallel task as one block; on by default under Actions
+buffer = false  # optional blocks outside Actions; Actions always streams live
+
+[output.replay]
+failure = "auto"  # auto, grouped, plain, off
+success = "off"   # grouped, plain, off
 
 [env]
 FORCE_COLOR = "1"

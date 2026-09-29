@@ -173,20 +173,16 @@ fn run_parallel(
     warnings: &mut HashSet<DetectionWarning>,
     outcomes: &mut Vec<ItemOutcome>,
 ) -> Result<i32> {
-    // A parent runner's open group cannot hold nested groups, so a nested
-    // parallel chain falls back to the live prefix muxer.
+    // Actions always streams both channels live; replay happens once all
+    // tasks have finished, at the invocation boundary.
     let in_gha = actions_rs::env::is_github_actions();
-    let grouped = overrides.buffers_parallel(in_gha) && !(in_gha && overrides.parent.group_open);
+    let grouped = overrides.buffers_parallel(in_gha);
     if grouped {
-        // `::group::` workflow-command syntax is GitHub-only; elsewhere
-        // grouped blocks get plain headers. Both land on stdout, so
-        // `--quiet` drops the delimiter and keeps the buffered blocks.
-        let style = if !overrides.emits_groups() {
-            BlockStyle::Bare
-        } else if in_gha {
-            BlockStyle::Gha
-        } else {
+        // Explicit block buffering is only used outside Actions.
+        let style = if overrides.emits_groups() {
             BlockStyle::Header
+        } else {
+            BlockStyle::Bare
         };
         run_parallel_grouped(ctx, overrides, chain, warnings, outcomes, style, in_gha)
     } else {
@@ -197,8 +193,6 @@ fn run_parallel(
 /// How a completed parallel task's buffered block is delimited on stdout.
 #[derive(Debug, Clone, Copy)]
 enum BlockStyle {
-    /// A collapsible GitHub Actions `::group::` section.
-    Gha,
     /// A plain `runner: <task>` header line.
     Header,
     /// No delimiter, `--quiet` leaves stdout to the tasks themselves.
@@ -514,6 +508,7 @@ struct StreamingTask {
     task: SpawnedTask,
     delivery: Arc<Delivery>,
     readers: Vec<std::thread::JoinHandle<()>>,
+    capture: Option<Arc<crate::replay::Capture>>,
 }
 
 /// `code`, or a failure when a task that succeeded `lost` output.
@@ -535,7 +530,8 @@ impl ParallelOutput for Streaming {
         mut task: SpawnedTask,
         (): (),
     ) -> StreamingTask {
-        let prefix = if overrides.emits_groups_for(&task.key) {
+        let in_gha = actions_rs::env::is_github_actions();
+        let prefix = if !in_gha && overrides.emits_groups_for(&task.key) {
             crate::chain::mux::render_prefix(&task.name, self.width, self.colorize)
         } else {
             String::new()
@@ -543,22 +539,39 @@ impl ParallelOutput for Streaming {
         let stdout = std::mem::replace(&mut task.stdout, Box::new(std::io::empty()));
         let stderr = std::mem::replace(&mut task.stderr, Box::new(std::io::empty()));
         let (stdout_policy, stderr_policy) = overrides.task_streams_for(&task.key);
+        let capture = overrides
+            .replay
+            .start(overrides, &task.key, &task.name)
+            .unwrap_or_else(|error| {
+                if overrides.shows_warnings() {
+                    eprintln!("warn: could not collect {} output: {error}", task.name);
+                }
+                None
+            });
         let delivery = Arc::new(Delivery::new(Arc::new(
             crate::chain::mux::SelectiveSink::new(
-                Arc::clone(&self.base),
+                Arc::new(crate::replay::Tee {
+                    inner: Arc::clone(&self.base),
+                    capture: capture.clone(),
+                }),
                 stdout_policy == crate::tool::TaskStream::Inherit,
                 stderr_policy == crate::tool::TaskStream::Inherit,
             ),
         )));
         let sink: Arc<dyn LineSink> = delivery.clone();
-        let readers = crate::chain::mux::spawn_readers(
-            vec![(prefix.clone(), false, stdout), (prefix, true, stderr)],
-            &sink,
-        );
+        let readers = if in_gha {
+            crate::chain::mux::spawn_raw_readers(vec![(false, stdout), (true, stderr)], &sink)
+        } else {
+            crate::chain::mux::spawn_readers(
+                vec![(prefix.clone(), false, stdout), (prefix, true, stderr)],
+                &sink,
+            )
+        };
         StreamingTask {
             task,
             delivery,
             readers,
+            capture,
         }
     }
 
@@ -577,10 +590,14 @@ impl ParallelOutput for Streaming {
             task,
             delivery,
             mut readers,
+            capture,
         } = task;
         wait_for_readers(&mut readers, READER_DRAIN_GRACE);
         self.readers.append(&mut readers);
         let code = delivered(delivery.failed(), code);
+        if let Some(capture) = capture {
+            capture.complete(code);
+        }
         record_finished(
             &task.key,
             overrides,
@@ -608,6 +625,7 @@ impl ParallelOutput for Streaming {
                     ..
                 },
             readers,
+            capture,
             ..
         } = task;
         self.readers.extend(readers);
@@ -618,6 +636,9 @@ impl ParallelOutput for Streaming {
         let elapsed = started.elapsed();
         match natural {
             Some(code) => {
+                if let Some(capture) = capture {
+                    capture.complete(code);
+                }
                 record_finished(&key, overrides, outcomes, name, elapsed, code);
             }
             None => record_killed(&key, overrides, outcomes, name, elapsed),
@@ -940,11 +961,7 @@ fn flush_task_group(
     sink.close();
     join_finished_readers(&mut readers);
 
-    // GroupGuard writes `::group::` now and `::endgroup::` on drop; don't
-    // hold the stdout lock across the guard's Drop. Bound to the whole body
-    // so the footer lands inside the fold.
-    let group = match style {
-        BlockStyle::Gha => Some(actions_rs::log::group_guard(format!("runner: {name}"))),
+    match style {
         BlockStyle::Header => {
             let header = format!("runner: {name}");
             let header = if colorize {
@@ -960,10 +977,9 @@ fn flush_task_group(
             let written = writeln!(out, "{header}").and_then(|()| out.flush());
             drop(out);
             written?;
-            None
         }
-        BlockStyle::Bare => None,
-    };
+        BlockStyle::Bare => {}
+    }
 
     let mut stdout = std::io::stdout();
     let mut stderr = std::io::stderr();
@@ -973,7 +989,6 @@ fn flush_task_group(
     // leave the child's bytes untouched.
     let replayed = sink.replay_to(&mut stdout, &mut stderr, in_gha);
     let footer = write_timing_footer(timing_footer, colorize);
-    drop(group);
     replayed.and(footer)
 }
 
@@ -1056,9 +1071,12 @@ fn emit_chain_summary(overrides: &ResolutionOverrides, outcomes: &[ItemOutcome],
             let ItemStatus::Ran { code, .. } = outcome.status else {
                 continue;
             };
-            actions_rs::Annotation::new()
-                .title(format!("runner: {}", outcome.name))
-                .error(format!("exit {code}"));
+            eprintln!(
+                "{}",
+                actions_rs::Annotation::new()
+                    .title(format!("runner: {}", outcome.name))
+                    .command(actions_rs::AnnotationKind::Error, format!("exit {code}"))
+            );
         }
     }
 }
@@ -1136,7 +1154,10 @@ fn cleanup_grouped_task(mut t: GroupedTask) {
     wait_for_readers(&mut t.readers, READER_DRAIN_GRACE);
 }
 
-fn wait_for_readers(readers: &mut Vec<std::thread::JoinHandle<()>>, grace: std::time::Duration) {
+pub(crate) fn wait_for_readers(
+    readers: &mut Vec<std::thread::JoinHandle<()>>,
+    grace: std::time::Duration,
+) {
     let deadline = Instant::now() + grace;
     loop {
         join_finished_readers(readers);

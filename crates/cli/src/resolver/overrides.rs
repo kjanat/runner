@@ -130,7 +130,9 @@ impl ResolutionOverrides {
                     .over(invocation_output(invocation, Origin::Env)),
                 project: file.map_or_else(OutputChoice::default, project_output),
                 buffer: file.and_then(|file| file.output.parallel.buffer),
+                replay: file.map_or_default(|file| file.output.replay),
             },
+            replay: std::sync::Arc::default(),
             dry_run: invocation.dry_run,
             failure_policy: invocation
                 .on_fail

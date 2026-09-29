@@ -48,6 +48,15 @@
         }
       ]
     },
+    "FailureReplay": {
+      "type": "string",
+      "enum": [
+        "auto",
+        "grouped",
+        "plain",
+        "off"
+      ]
+    },
     "InstallSettings": {
       "description": "`[install]`.",
       "type": "object",
@@ -91,7 +100,7 @@
           ]
         },
         "groups": {
-          "description": "Wrap a task's output in a collapsible GitHub Actions group.",
+          "description": "Enable the final stderr recap in GitHub Actions, and parallel task\nprefixes or block headers on a terminal outside Actions.",
           "default": true,
           "type": [
             "boolean",
@@ -109,6 +118,10 @@
             "boolean",
             "null"
           ]
+        },
+        "replay": {
+          "$ref": "#/$defs/ReplayOutput",
+          "description": "Final stderr replay in GitHub Actions. Live stderr is never delayed."
         },
         "summary": {
           "description": "Print a summary after a chain.",
@@ -150,11 +163,26 @@
       "type": "object",
       "properties": {
         "buffer": {
-          "description": "Hold each parallel task's output and print it as one block when the\ntask ends. Unset, runner buffers under GitHub Actions and interleaves\nprefixed lines elsewhere.",
+          "description": "Hold each parallel task's output and print it as one block when the\ntask ends outside Actions. Actions always streams live output and uses\n`[output.replay]` for the final stderr recap.",
           "type": [
             "boolean",
             "null"
           ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "ReplayOutput": {
+      "description": "`[output.replay]`: failed tasks are plain when only one failed, grouped\notherwise. Successful tasks are not repeated unless requested.",
+      "type": "object",
+      "properties": {
+        "failure": {
+          "$ref": "#/$defs/FailureReplay",
+          "default": "auto"
+        },
+        "success": {
+          "$ref": "#/$defs/SuccessReplay",
+          "default": "off"
         }
       },
       "additionalProperties": false
@@ -210,12 +238,20 @@
       },
       "additionalProperties": false
     },
+    "SuccessReplay": {
+      "type": "string",
+      "enum": [
+        "grouped",
+        "plain",
+        "off"
+      ]
+    },
     "TaskOutput": {
       "description": "The output settings `[output]` and `[tasks.<name>.output]` share.",
       "type": "object",
       "properties": {
         "groups": {
-          "description": "Wrap a task's output in a collapsible GitHub Actions group.",
+          "description": "Enable the final stderr recap in GitHub Actions, and parallel task\nprefixes or block headers on a terminal outside Actions.",
           "default": true,
           "type": [
             "boolean",

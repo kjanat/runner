@@ -30,6 +30,8 @@ pub(crate) struct ResolutionOverrides {
     pub quiet_level: QuietLevel,
     /// What runner, tools and tasks print.
     pub output: Output,
+    /// Shared by all tasks in this invocation, including install prerequisites.
+    pub replay: std::sync::Arc<crate::replay::Session>,
     /// `--dry-run`: print the plan instead of running it.
     pub dry_run: bool,
     /// What a chain does after a task fails.
@@ -62,6 +64,7 @@ impl Default for ResolutionOverrides {
             runtime: None,
             quiet_level: QuietLevel::Off,
             output: Output::default(),
+            replay: std::sync::Arc::default(),
             dry_run: false,
             failure_policy: FailurePolicy::default(),
             script_policy: ScriptPolicy::Default,
@@ -102,6 +105,7 @@ pub(crate) struct Output {
     pub project: OutputChoice,
     /// `[output.parallel].buffer`.
     pub buffer: Option<bool>,
+    pub replay: crate::config::ReplayOutput,
 }
 
 /// One `[tasks.<name>]` table, parsed.
@@ -187,12 +191,9 @@ impl ResolutionOverrides {
         self.shows(RunnerOutput::FatalErrors)
     }
 
-    /// Whether parallel output is held per task: `[output.parallel].buffer`,
-    /// else under GitHub Actions while groups are on.
+    /// Explicit block buffering outside Actions. Actions keeps both streams live.
     pub(crate) fn buffers_parallel(&self, in_github_actions: bool) -> bool {
-        self.output
-            .buffer
-            .unwrap_or_else(|| in_github_actions && self.emits_groups())
+        !in_github_actions && self.output.buffer.unwrap_or(false)
     }
 
     pub(crate) fn host_verbosity_for(&self, task: &str) -> HostVerbosity {

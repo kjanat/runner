@@ -9,6 +9,15 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ## [Unreleased]
 
+### Changed
+
+- Keep task stdout undecorated in GitHub Actions, including parallel tasks,
+  so pipes and command substitutions work without `-q`. Stream stderr live
+  and replay failures at invocation end: one failure is plain, multiple
+  failures get separate groups. Configure failure and successful-task replay
+  with `[output.replay]`; successful tasks are not replayed by default.
+  Actions always streams live, regardless of `[output.parallel] buffer`.
+
 ### Release checklist
 
 - [ ] Bump `Cargo.toml`; MUST run `cargo check` without `--locked` to update `Cargo.lock`.
