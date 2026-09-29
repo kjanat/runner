@@ -157,6 +157,15 @@ paru -S runner-run-bin # or `paru -S runner-run` (builds from source)
 yay  -S runner-run-bin # .. `yay  -S runner-run`
 ```
 
+Or on Debian / Ubuntu:
+
+```sh
+sudo install -d -m 0755 /etc/apt/keyrings
+curl -fsSL https://apt.runner.kjanat.dev/runner-run.gpg | sudo tee /etc/apt/keyrings/runner-run.gpg >/dev/null
+echo "deb [signed-by=/etc/apt/keyrings/runner-run.gpg] https://apt.runner.kjanat.dev stable main" | sudo tee /etc/apt/sources.list.d/runner-run.list >/dev/null
+sudo apt update && sudo apt install runner-run
+```
+
 <details>
 <summary><i>Other install methods</i></summary>
 
@@ -189,6 +198,12 @@ docker run --rm --entrypoint /run -v "$PWD:/w" kjanat/runner build
 
 Without `-v`/`--volume`, the container sees no project.
 Only `--version` or `--help` are meaningful without a mount.
+
+```sh
+# Debian/Ubuntu — direct .deb without the apt repo (arch ∈ amd64 arm64 armhf):
+curl -fsSLO https://github.com/kjanat/runner/releases/download/v0.12.0/runner-run_0.12.0_amd64.deb
+sudo apt install ./runner-run_0.12.0_amd64.deb
+```
 
 ```sh
 # One-liner (latest):

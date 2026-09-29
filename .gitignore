@@ -10,6 +10,7 @@
 /docs/notes/proposal.md
 /mise.toml
 /packaging/man/
+debian/.work/
 dist/
 downloads/
 node_modules/

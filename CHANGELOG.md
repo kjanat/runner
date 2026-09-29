@@ -19,6 +19,39 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - [ ] Minor bumps: after publish, raise the `runner-run` catalog range to `^0.Y` and refresh `bun.lock`; `@latest` breaks `--frozen-lockfile`.
 - [ ] First release with `runner-run-core`, `runner-run-schemes` and `runner-run-providers`: add a `CARGO_REGISTRY_TOKEN` secret to the `crates-io` environment, release, then add a trusted publisher for each (workflow `release.yml`, environment `crates-io`) and delete the secret.
 
+### Added
+
+- Debian/apt distribution channel. The `runner-run` package, built for
+  `amd64`, `arm64`, and `armhf` from the prebuilt release binaries
+  (glibc, dynamically linked — the same tarballs the AUR `-bin` and npm
+  channels repackage), is published two ways: a signed apt repository at
+  https://apt.runner.kjanat.dev (`apt-get install runner-run`) and as
+  `.deb` assets attached to every GitHub release (`apt install
+  ./runner-run_<ver>_<arch>.deb`). Packages are native (no Debian
+  revision); a semver `-rc.N` prerelease maps to a Debian `~rc.N` so it
+  sorts before the final release.
+- Each `.deb` ships the `runner` and `run` binaries plus bash, zsh, and
+  fish completions auto-loaded from the canonical system dirs (and the
+  pwsh script at `/usr/share/runner/runner.ps1`), matching the AUR
+  packages. A `lintian` override documents the one false positive
+  (`embedded-library libyaml` — runner links the pure-Rust `yaml-rust2`,
+  not the C libyaml), so the package lints clean of errors.
+- `.github/workflows/debian-release.yml` runs on every `release:
+  published` event (plus manual `workflow_dispatch` + `dry-run`). The
+  `build-deb` job repackages and attaches the `.debs` (no secrets);
+  `publish-apt` assembles the static repo from that artifact, GPG-signs
+  `InRelease` + `Release.gpg`, and pushes it to the `gh-pages` branch
+  (served by GitHub Pages on the `apt.runner.kjanat.dev` custom domain).
+  It is gated behind an `apt` GitHub Environment and stays inert until
+  `APT_GPG_PRIVATE_KEY` is set — the `.deb` assets ship regardless.
+- `.github/scripts/build/deb-build.sh` (offline; repackages the release
+  tarballs into `.debs` using the checked-in `debian/control.in`
+  template) and `.github/scripts/publish/apt-repo.sh` (regenerates the
+  signed `dists/` index from `pool/`, preserving every past release so
+  `apt install runner-run=<ver>` keeps working). A strict semver regex
+  guards the version before any `sed` substitution, mirroring
+  `aur-prepare.sh`.
+
 ## [0.27.0] - 2026-09-27
 
 ### Added
