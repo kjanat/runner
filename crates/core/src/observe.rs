@@ -93,8 +93,12 @@ fn look(
         declared,
     };
     Ok(match signal {
-        Signal::ProjectFile { name, manifest } => {
-            if file_in(dir, manifest)?.is_none() {
+        Signal::ProjectFile { name, manifests } => {
+            let mut present = false;
+            for manifest in *manifests {
+                present |= file_in(dir, manifest)?.is_some();
+            }
+            if !present {
                 return Ok(Vec::new());
             }
             file_in(dir, name)?

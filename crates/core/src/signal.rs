@@ -18,8 +18,8 @@ pub enum Signal {
     ProjectFile {
         /// The configuration file name.
         name: &'static str,
-        /// The manifest required in the same scope directory.
-        manifest: &'static str,
+        /// Any of these manifests must exist in the same scope directory.
+        manifests: &'static [&'static str],
     },
     /// A file in the scope directory, matched without regard to ASCII case.
     FileCaseless(&'static str),

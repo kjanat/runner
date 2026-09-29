@@ -131,23 +131,9 @@ fn private(_dir: &Path) -> bool {
 /// The nearest ancestor inside `boundary` that holds a file any provider's
 /// signals name or a config file, else `dir`.
 fn project_root(dir: &Path, boundary: &Path) -> std::path::PathBuf {
-    let signals = || runner_providers::REGISTRY.iter().flat_map(|p| p.signals);
-    let exact: Vec<&str> = signals()
-        .flat_map(runner_core::Signal::file_names)
-        .collect();
-    let caseless: Vec<&str> = signals()
-        .filter_map(|signal| match signal {
-            runner_core::Signal::FileCaseless(name) => Some(*name),
-            _ => None,
-        })
-        .collect();
     dir.ancestors()
         .take_while(|ancestor| ancestor.starts_with(boundary))
-        .find(|ancestor| {
-            exact.iter().any(|name| ancestor.join(name).is_file())
-                || holds_caseless(ancestor, &caseless)
-                || crate::config::holds_config(ancestor)
-        })
+        .find(|ancestor| holds_project_files(ancestor))
         .map_or_else(|| dir.to_owned(), Path::to_path_buf)
 }
 
@@ -193,6 +179,12 @@ fn workspace_view(workspace: runner_core::Workspace) -> Workspace {
 fn holds_project_files(dir: &Path) -> bool {
     let signals = || runner_providers::REGISTRY.iter().flat_map(|p| p.signals);
     let exact: Vec<&str> = signals()
+        .filter(|signal| match signal {
+            runner_core::Signal::ProjectFile { manifests, .. } => {
+                manifests.iter().any(|name| dir.join(name).is_file())
+            }
+            _ => true,
+        })
         .flat_map(runner_core::Signal::file_names)
         .collect();
     let caseless: Vec<&str> = signals()
@@ -684,6 +676,32 @@ mod tests {
                 "{name}: {:?}",
                 ctx.tasks
             );
+        }
+    }
+
+    #[test]
+    fn yarn_configuration_alone_does_not_hide_an_ancestor_workspace() {
+        for config in [".yarnrc", ".yarnrc.yml"] {
+            let dir = TempDir::new("detect-yarn-condition");
+            fs::write(
+                dir.path().join("package.json"),
+                r#"{"workspaces":["packages/*"],"scripts":{"build":"echo root"}}"#,
+            )
+            .unwrap();
+            let loose = dir.path().join("loose");
+            fs::create_dir_all(&loose).unwrap();
+            fs::write(loose.join(config), "").unwrap();
+            assert!(!super::holds_project_files(&loose));
+            assert_eq!(super::project_root(&loose, dir.path()), dir.path());
+            let (workspace, warning) = super::anchor(&loose, dir.path());
+            assert!(warning.is_none());
+            assert_eq!(workspace.unwrap().root, dir.path());
+            for manifest in ["package.json", "package.json5", "package.yaml"] {
+                fs::write(loose.join(manifest), "{}").unwrap();
+                assert!(super::holds_project_files(&loose));
+                assert_eq!(super::project_root(&loose, dir.path()), loose);
+                fs::remove_file(loose.join(manifest)).unwrap();
+            }
         }
     }
 

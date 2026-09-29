@@ -33,11 +33,11 @@ pub const PROVIDER: Provider = Provider {
         MANIFEST[1],
         Signal::ProjectFile {
             name: ".yarnrc.yml",
-            manifest: "package.json",
+            manifests: super::MANIFESTS,
         },
         Signal::ProjectFile {
             name: ".yarnrc",
-            manifest: "package.json",
+            manifests: super::MANIFESTS,
         },
         Signal::Probe("yarn"),
     ],
@@ -258,7 +258,8 @@ fn variant_of(
                 line,
             })
         });
-    let configured_project = configured && manifest.is_file();
+    let configured_project =
+        configured && super::MANIFESTS.iter().any(|name| dir.join(name).is_file());
     Ok(declared
         .or_else(|| {
             from_manifest.map(|line| Hint {

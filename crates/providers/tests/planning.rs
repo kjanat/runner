@@ -2297,16 +2297,20 @@ fn yarn_configuration_requires_a_project_manifest() {
                 .all(|p| p.provider != ProviderId::Yarn)
         );
 
-        std::fs::write(
-            fixture.0.root.join("package.json"),
-            r#"{"scripts":{"build":"echo ok"}}"#,
-        )
-        .unwrap();
-        let project = resolved(&fixture, &policy);
-        assert_eq!(
-            manager_for_scripts(&project, &policy),
-            Some(ProviderId::Yarn)
-        );
+        for (manifest, body) in [
+            ("package.json", r#"{"scripts":{"build":"echo ok"}}"#),
+            ("package.json5", "{scripts:{build:'echo ok'}}"),
+            ("package.yaml", "scripts:\n  build: echo ok\n"),
+        ] {
+            std::fs::write(fixture.0.root.join(manifest), body).unwrap();
+            let project = resolved(&fixture, &policy);
+            assert_eq!(
+                manager_for_scripts(&project, &policy),
+                Some(ProviderId::Yarn),
+                "{name} with {manifest}"
+            );
+            std::fs::remove_file(fixture.0.root.join(manifest)).unwrap();
+        }
     }
 }
 
