@@ -142,6 +142,108 @@ fn exact_host_binary_wins_over_a_task_spelling_suggestion() {
     assert!(String::from_utf8_lossy(&output.stdout).contains("exact-binary-ran"));
 }
 
+#[cfg(unix)]
+#[test]
+fn doctor_resolves_mise_shims_in_the_inspected_directory() {
+    let project = TempProject::new("mise-shims")
+        .file("package.json", r#"{"workspaces":["member"]}"#)
+        .file("member/package.json", "{}")
+        .executable(
+            "empty-path/mise",
+            r#"#!/bin/sh
+case "$*" in
+  'settings get shims_dir') printf '%s\n' "${0%/*}" ;;
+  'settings get system_shims_dir') exit 1 ;;
+  'which bun') printf '%s/selected-bun\n' "$PWD" ;;
+  'which npm') printf 'npm is a mise bin however it is not currently active\n' >&2; exit 1 ;;
+  'bin-paths') ;;
+  'tasks --json' | 'ls --missing --json') printf '[]\n' ;;
+  *) printf '{}\n' ;;
+esac
+"#,
+        );
+    for tool in ["bun", "npm"] {
+        std::os::unix::fs::symlink(
+            project.path().join("empty-path/mise"),
+            project.path().join("empty-path").join(tool),
+        )
+        .unwrap();
+    }
+    let output = support::command(runner_binary())
+        .env("PATH", project.path().join("empty-path"))
+        .arg("--dir")
+        .arg(project.path().join("member"))
+        .arg("doctor")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains(&format!(
+            "-> {}/selected-bun (mise)",
+            project.path().join("member").display()
+        )),
+        "{stdout}"
+    );
+    assert!(stdout.contains("(mise shim, not provisioned)"), "{stdout}");
+}
+
+#[cfg(unix)]
+#[test]
+fn doctor_finds_legacy_mise_custom_shims_and_reports_missing_bins() {
+    let project = TempProject::new("legacy-mise-shims")
+        .file("package.json", "{}")
+        .executable("empty-path/mise", r#"#!/bin/sh
+case "$*" in
+  'settings get shims_dir' | 'settings get system_shims_dir')
+    printf 'Unknown setting\n' >&2; exit 1 ;;
+  'which bun') printf '%s/selected-bun\n' "$PWD" ;;
+  'which npm') printf 'npm is not a mise bin. Perhaps you need to install it first.\n' >&2; exit 1 ;;
+  'bin-paths') ;;
+  'tasks --json' | 'ls --missing --json') printf '[]\n' ;;
+  *) printf '{}\n' ;;
+esac
+"#);
+    let shims = project.path().join("custom-shims");
+    std::fs::create_dir_all(&shims).unwrap();
+    for tool in ["bun", "npm"] {
+        std::os::unix::fs::symlink(project.path().join("empty-path/mise"), shims.join(tool))
+            .unwrap();
+    }
+    let output = support::command(runner_binary())
+        .env(
+            "PATH",
+            std::env::join_paths([shims, project.path().join("empty-path")]).unwrap(),
+        )
+        .env("HOME", project.path())
+        .env("USERPROFILE", project.path())
+        .env("MISE_SHIMS_DIR", "~/custom-shims")
+        .env("MISE_DATA_DIR", project.path().join("different-data"))
+        .arg("--dir")
+        .arg(project.path())
+        .arg("doctor")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains(&format!(
+            "-> {}/selected-bun (mise)",
+            project.path().display()
+        )),
+        "{stdout}"
+    );
+    assert!(stdout.contains("(mise shim, not provisioned)"), "{stdout}");
+}
+
 fn uv_project(tag: &str) -> TempProject {
     TempProject::new(tag)
         .file(
