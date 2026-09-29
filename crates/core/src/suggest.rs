@@ -6,29 +6,38 @@ pub(crate) fn corrections(cascade: &Cascade<'_>, name: &str, hints: &[&str]) -> 
     if NameShape::of(name) != NameShape::BARE || name.len() > 128 {
         return Vec::new();
     }
+    let close_name =
+        |candidate: &&str| *candidate != name && close(name, candidate.trim_start_matches('-'));
     let mut candidates: Vec<String> = cascade
         .builtins
         .iter()
         .copied()
         .chain(hints.iter().copied())
-        .chain(
-            cascade
-                .project
-                .tasks
-                .iter()
-                .filter(|task| {
-                    cascade
-                        .policy
-                        .source
-                        .as_ref()
-                        .is_none_or(|choice| choice.id == task.source)
-                })
-                .map(|task| task.name.as_str())
-                .filter(|name| matches!(crate::select(cascade, name), Ok(Some(_)))),
-        )
-        .filter(|candidate| *candidate != name && close(name, candidate.trim_start_matches('-')))
+        .filter(close_name)
         .map(str::to_owned)
         .collect();
+    let mut tasks: Vec<_> = cascade
+        .project
+        .tasks
+        .iter()
+        .filter(|task| {
+            cascade
+                .policy
+                .source
+                .as_ref()
+                .is_none_or(|choice| choice.id == task.source)
+        })
+        .map(|task| task.name.as_str())
+        .filter(close_name)
+        .collect();
+    tasks.sort_unstable();
+    tasks.dedup();
+    candidates.extend(
+        tasks
+            .into_iter()
+            .filter(|name| matches!(crate::select(cascade, name), Ok(Some(_))))
+            .map(str::to_owned),
+    );
     candidates.sort_unstable();
     candidates.dedup();
     candidates.truncate(3);

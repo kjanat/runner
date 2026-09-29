@@ -26,9 +26,9 @@ fn command_hints(overrides: &ResolutionOverrides) -> Vec<String> {
     let command = crate::args::Cli::command();
     command
         .get_subcommands()
-        .filter(|subcommand| !overrides.run_alias && !subcommand.is_hide_set())
+        .filter(|subcommand| overrides.root_command_hints && !subcommand.is_hide_set())
         .map(|command| command.get_name().to_owned())
-        .chain(["--version".to_owned()])
+        .chain(overrides.root_command_hints.then(|| "--version".to_owned()))
         .collect()
 }
 

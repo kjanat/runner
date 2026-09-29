@@ -311,3 +311,21 @@ fn run_alias_does_not_suggest_root_cli_commands() {
     let output = run_in(&project, &["doctro"]);
     assert!(String::from_utf8_lossy(&output.stderr).contains("did you mean `doctor`"));
 }
+
+#[cfg(unix)]
+#[test]
+fn explicit_run_and_why_do_not_use_root_command_hints() {
+    let project = bun_project("explicit-task-hints")
+        .executable("empty-path/bun", "#!/bin/sh\nprintf fallback-ran\n");
+    let output = run_in(&project, &["run", "doctro"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("fallback-ran"));
+    let output = run_in(&project, &["why", "doctro", "--json"]);
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_ne!(report["decision"]["strategy"], "refused");
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("did you mean"));
+}

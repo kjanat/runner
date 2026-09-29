@@ -1255,7 +1255,8 @@ fn dispatch(
             Vec::new(),
         ),
     };
-    overrides.run_alias = run_alias;
+    overrides.root_command_hints =
+        !run_alias && matches!(cli.command, Some(args::Command::External(_)));
     let mut ctx = detect::detect_anchored(dir, anchored, &overrides);
     if let Some(loaded) = &loaded_config {
         ctx.warnings.extend(loaded.warnings.iter().cloned());

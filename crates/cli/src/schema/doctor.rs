@@ -1552,8 +1552,8 @@ mod tests {
     fn every_resolution_overrides_field_is_reported_or_excluded() {
         // `package` names one invocation's binary, `parent` is runner-to-runner
         // plumbing and `config` is the file path the report already carries.
-        // `run_alias` selects command hints, not a configurable override.
-        const EXCLUDED: &[&str] = &["package", "parent", "config", "run_alias"];
+        // `root_command_hints` selects command hints, not a configurable override.
+        const EXCLUDED: &[&str] = &["package", "parent", "config", "root_command_hints"];
         // Resolver field name -> name it's actually reported under.
         const RENAMED: &[(&str, &str)] = &[("quiet_level", "output")];
 
@@ -1567,7 +1567,7 @@ mod tests {
             }};
         }
         let resolution_overrides_fields = resolution_overrides_fields![
-            run_alias,
+            root_command_hints,
             pm,
             package,
             source,
