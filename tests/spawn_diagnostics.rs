@@ -180,6 +180,56 @@ esac
     assert!(stdout.contains("(mise shim, not provisioned)"), "{stdout}");
 }
 
+#[cfg(unix)]
+#[test]
+fn doctor_finds_legacy_mise_custom_shims_and_reports_missing_bins() {
+    let project = TempProject::new("legacy-mise-shims")
+        .file("package.json", "{}")
+        .executable("empty-path/mise", r#"#!/bin/sh
+case "$*" in
+  'settings get shims_dir' | 'settings get system_shims_dir')
+    printf 'Unknown setting\n' >&2; exit 1 ;;
+  'which bun') printf '%s/selected-bun\n' "$PWD" ;;
+  'which npm') printf 'npm is not a mise bin. Perhaps you need to install it first.\n' >&2; exit 1 ;;
+  'bin-paths') ;;
+  'tasks --json' | 'ls --missing --json') printf '[]\n' ;;
+  *) printf '{}\n' ;;
+esac
+"#);
+    let shims = project.path().join("custom-shims");
+    std::fs::create_dir_all(&shims).unwrap();
+    for tool in ["bun", "npm"] {
+        std::os::unix::fs::symlink(project.path().join("empty-path/mise"), shims.join(tool))
+            .unwrap();
+    }
+    let output = support::command(runner_binary())
+        .env(
+            "PATH",
+            std::env::join_paths([shims.clone(), project.path().join("empty-path")]).unwrap(),
+        )
+        .env("MISE_SHIMS_DIR", &shims)
+        .env("MISE_DATA_DIR", project.path().join("different-data"))
+        .arg("--dir")
+        .arg(project.path())
+        .arg("doctor")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains(&format!(
+            "-> {}/selected-bun (mise)",
+            project.path().display()
+        )),
+        "{stdout}"
+    );
+    assert!(stdout.contains("(mise shim, not provisioned)"), "{stdout}");
+}
+
 fn uv_project(tag: &str) -> TempProject {
     TempProject::new(tag)
         .file(

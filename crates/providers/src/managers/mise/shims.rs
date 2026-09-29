@@ -21,7 +21,9 @@ pub(super) fn dirs() -> Vec<PathBuf> {
                 home.as_ref().map(|dir| dir.join(".local/share/mise"))
             }
         });
-    let user = setting(&mise, "shims_dir").or_else(|| data.map(|dir| dir.join("shims")));
+    let user = setting(&mise, "shims_dir")
+        .or_else(|| std::env::var_os("MISE_SHIMS_DIR").map(PathBuf::from))
+        .or_else(|| data.map(|dir| dir.join("shims")));
     let system = setting(&mise, "system_shims_dir")
         .or_else(|| {
             std::env::var_os("MISE_SYSTEM_DATA_DIR").map(|dir| PathBuf::from(dir).join("shims"))
@@ -70,6 +72,7 @@ fn classify(success: bool, stdout: &[u8], stderr: &[u8]) -> Shim {
         let error = String::from_utf8_lossy(stderr);
         return if [
             "not currently active",
+            "is not a mise bin",
             "not installed",
             "not found",
             "no version",
@@ -104,6 +107,14 @@ mod tests {
                 false,
                 b"",
                 b"mise ERROR bun is a mise bin however it is not currently active"
+            ),
+            Shim::NotProvisioned
+        );
+        assert_eq!(
+            classify(
+                false,
+                b"",
+                b"mise ERROR npm is not a mise bin. Perhaps you need to install it first."
             ),
             Shim::NotProvisioned
         );
