@@ -4,19 +4,22 @@ import { readdir, rm } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { brotliCompressSync, constants as zlib, gzipSync } from "node:zlib";
 
+import workspaceCargo from "../Cargo.toml" with { type: "toml" };
 import cargo from "../crates/cli/Cargo.toml" with { type: "toml" };
 
 const root = import.meta.dir;
 const [dist, src, pub] = [join(root, "dist"), join(root, "src"), join(root, "public")];
 
 const pkg = cargo.package;
+const version = pkg.version?.workspace === true ? workspaceCargo.workspace.package.version : pkg.version;
+if (typeof version !== "string") throw new Error("Cargo package version must resolve to a string");
 const author = pkg.metadata.authors[0];
 const repo = pkg.repository.replace(/\/$/, "");
 
 const CF_BEACON_TOKEN = "092edc6dde124fe4816fd2d95c16db39";
 
 const tokens: Record<string, string> = {
-	version: pkg.version,
+	version,
 	repo,
 	repoShort: repo.replace(/^https?:\/\//, ""),
 	license: pkg.license,
