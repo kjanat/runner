@@ -9,8 +9,7 @@ pub(super) fn dirs() -> Vec<PathBuf> {
     let Some(mise) = runner_core::probe_with("mise", &[]) else {
         return Vec::new();
     };
-    let home =
-        std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from);
+    let home = std::env::home_dir();
     let data = std::env::var_os("MISE_DATA_DIR")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("XDG_DATA_HOME").map(|dir| PathBuf::from(dir).join("mise")))
@@ -109,6 +108,46 @@ fn classify(tool: &str, success: bool, stdout: &[u8], stderr: &[u8]) -> Shim {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Run in a child process so removing HOME cannot race other tests.
+    #[cfg(unix)]
+    #[test]
+    fn missing_home_uses_the_account_home_for_legacy_mise() {
+        use std::os::unix::fs::PermissionsExt;
+        const CHILD: &str = "RUNNER_TEST_MISE_ACCOUNT_HOME";
+        if std::env::var_os(CHILD).is_some() {
+            assert!(std::env::var_os("HOME").is_none());
+            let home = std::env::home_dir().expect("test account has an OS home");
+            let expected = home.join(".local/share/mise/shims");
+            let expected = expected.canonicalize().unwrap_or(expected);
+            assert!(dirs().contains(&expected), "missing account shim directory");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let mise = dir.path().join("mise");
+        std::fs::write(&mise, "#!/bin/sh\nexit 1\n").unwrap();
+        std::fs::set_permissions(&mise, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "managers::mise::shims::tests::missing_home_uses_the_account_home_for_legacy_mise",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("PATH", dir.path())
+            .env_remove("HOME")
+            .env_remove("MISE_SHIMS_DIR")
+            .env_remove("MISE_DATA_DIR")
+            .env_remove("XDG_DATA_HOME")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 
     #[test]
     fn expands_only_a_leading_home_component() {
