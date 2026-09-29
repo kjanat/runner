@@ -104,6 +104,44 @@ fn bun_project(tag: &str) -> TempProject {
     )
 }
 
+#[test]
+fn unknown_names_offer_hints_without_dispatching() {
+    let project = bun_project("typos");
+    for (name, hint) in [
+        ("biuld", "build"),
+        ("instlal", "install"),
+        ("version", "--version"),
+        ("doctro", "doctor"),
+    ] {
+        let output = run_in(&project, &[name]);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{name}");
+        assert!(
+            stderr.contains("did you mean") && stderr.contains(hint),
+            "{stderr}"
+        );
+        assert!(!stderr.contains("→"), "must not dispatch: {stderr}");
+    }
+    let output = run_in(&project, &["why", "biuld"]);
+    assert!(String::from_utf8_lossy(&output.stdout).contains("did you mean `build`"));
+}
+
+#[cfg(unix)]
+#[test]
+fn exact_host_binary_wins_over_a_task_spelling_suggestion() {
+    let project = bun_project("exact-before-typo").executable(
+        "empty-path/biuld",
+        "#!/bin/sh\nprintf 'exact-binary-ran\\n'\n",
+    );
+    let output = run_in(&project, &["biuld"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("exact-binary-ran"));
+}
+
 fn uv_project(tag: &str) -> TempProject {
     TempProject::new(tag)
         .file(
@@ -200,4 +238,94 @@ fn missing_direct_command_keeps_generic_spawn_error() {
     assert_eq!(output.status.code(), Some(1), "stderr: {stderr}");
     assert!(!stderr.contains("was selected"), "stderr: {stderr}");
     assert!(!stderr.contains("packageManager"), "stderr: {stderr}");
+}
+
+#[cfg(unix)]
+#[test]
+fn chain_typos_are_refused_before_any_sibling_runs() {
+    for mode in ["-s", "-p"] {
+        let project = bun_project("chain-typo")
+            .executable("empty-path/bun", "#!/bin/sh\nprintf ran > sibling-ran\n");
+        let output = run_in(&project, &["run", mode, "build", "biuld"]);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{stderr}");
+        assert!(stderr.contains("did you mean `build`"), "{stderr}");
+        assert!(!project.path().join("sibling-ran").exists());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn chain_preflight_preserves_exact_host_matches() {
+    let project = bun_project("chain-exact")
+        .executable("empty-path/bun", "#!/bin/sh\nprintf build-ran\n")
+        .executable("empty-path/biuld", "#!/bin/sh\nprintf exact-ran\n");
+    for mode in ["-s", "-p"] {
+        let output = run_in(&project, &["run", mode, "build", "biuld"]);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("exact-ran"));
+    }
+}
+
+#[test]
+fn typo_explanation_preserves_visited_rungs() {
+    let project = bun_project("typo-why");
+    let output = run_in(&project, &["why", "biuld", "--json"]);
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        report["decision"]["tried"],
+        serde_json::json!([
+            "builtin",
+            "path",
+            "task",
+            "file",
+            "dep",
+            "test",
+            "bins",
+            "host",
+            "local-exec"
+        ])
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn run_alias_does_not_suggest_root_cli_commands() {
+    let project =
+        bun_project("alias-hints").executable("empty-path/bun", "#!/bin/sh\nprintf fallback-ran\n");
+    let output = support::command(env!("CARGO_BIN_EXE_run"))
+        .env("PATH", project.path().join("empty-path"))
+        .args(["--dir", project.path().to_str().unwrap(), "doctro"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("fallback-ran"));
+    let output = run_in(&project, &["doctro"]);
+    assert!(String::from_utf8_lossy(&output.stderr).contains("did you mean `doctor`"));
+}
+
+#[cfg(unix)]
+#[test]
+fn explicit_run_and_why_do_not_use_root_command_hints() {
+    let project = bun_project("explicit-task-hints")
+        .executable("empty-path/bun", "#!/bin/sh\nprintf fallback-ran\n");
+    let output = run_in(&project, &["run", "doctro"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("fallback-ran"));
+    let output = run_in(&project, &["why", "doctro", "--json"]);
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_ne!(report["decision"]["strategy"], "refused");
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("did you mean"));
 }

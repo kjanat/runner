@@ -102,6 +102,7 @@ impl ResolutionOverrides {
             .or_else(|| install.and_then(|install| install.scripts));
 
         let resolved = Self {
+            root_command_hints: false,
             pm: invocation.pm.map(|(pm, origin)| PmOverride {
                 pm,
                 origin: OverrideOrigin::from(origin),

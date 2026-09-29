@@ -293,7 +293,13 @@ where
     let doctor = matches!(parsed.cli.command, Some(args::Command::Doctor { .. }));
     let env_warnings = env_issues(&parsed, doctor)?;
     let project_dir = resolve_project_dir(parsed.cli.global.project_dir.as_deref(), dir)?;
-    dispatch(parsed.cli, &parsed.origins, env_warnings, &project_dir)
+    dispatch(
+        parsed.cli,
+        &parsed.origins,
+        env_warnings,
+        &project_dir,
+        false,
+    )
 }
 
 /// Every variable whose value its flag rejects, as warnings for `doctor`.
@@ -587,6 +593,7 @@ fn dispatch_run_alias(
         origins,
         env_warnings,
         dir,
+        true,
     )
 }
 
@@ -1229,6 +1236,7 @@ fn dispatch(
     origins: &invocation::Origins,
     env_warnings: Vec<types::DetectionWarning>,
     dir: &Path,
+    run_alias: bool,
 ) -> Result<i32> {
     let anchored = detect::anchored(dir);
     let config_dir = anchored.root.clone();
@@ -1247,6 +1255,8 @@ fn dispatch(
             Vec::new(),
         ),
     };
+    overrides.root_command_hints =
+        !run_alias && matches!(cli.command, Some(args::Command::External(_)));
     let mut ctx = detect::detect_anchored(dir, anchored, &overrides);
     if let Some(loaded) = &loaded_config {
         ctx.warnings.extend(loaded.warnings.iter().cloned());

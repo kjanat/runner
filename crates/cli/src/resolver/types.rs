@@ -16,6 +16,8 @@ use runner_core::ProviderId;
 /// table, then the project's, then the default.
 #[derive(Debug, Clone)]
 pub(crate) struct ResolutionOverrides {
+    /// Whether root CLI command hints apply to this invocation.
+    pub root_command_hints: bool,
     /// `--pm`, for the ecosystem the named package manager belongs to.
     pub pm: Option<PmOverride>,
     /// `--package`: the npm package whose declared binary the task token names.
@@ -53,6 +55,7 @@ pub(crate) struct ResolutionOverrides {
 impl Default for ResolutionOverrides {
     fn default() -> Self {
         Self {
+            root_command_hints: false,
             pm: None,
             package: None,
             source: None,

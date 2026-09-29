@@ -81,16 +81,10 @@ fn run_chain_with_head(
         return Ok(code);
     }
 
-    // Pre-flight every task token before *any* sibling runs. Catches
-    // the common UX trap where `runner run -s bb t lint:cargo` would
-    // run `bb` and `t` to completion before bailing on the obvious
-    // typo at item 3. `precheck_task` is side-effect-free, no
-    // warnings emitted, no arrows printed, no subprocess spawned,
-    // and only fires for errors we can determine purely from
-    // `ctx.tasks` + the override shape. Errors that need the resolver
-    // (PM-exec fallback miss, manifest mismatch) still surface at
-    // dispatch time, which is unavoidable without spawning probes
-    // here.
+    // Preflight every task token before any sibling runs. Selection errors and
+    // spelling corrections must not follow an earlier task's side effects.
+    // Local lookups preserve exact files, dependencies and host executables;
+    // package-manager fallback failures still belong to normal dispatch.
     for item in &chain.items {
         if let ChainItemKind::Task(name) = &item.kind {
             crate::commands::run::precheck_task(ctx, overrides, name)?;

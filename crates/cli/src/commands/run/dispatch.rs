@@ -384,7 +384,7 @@ fn dispatch_plan(
     };
     let confirm = |name: &str, rung: &str| crate::commands::confirm_fetch(name, rung);
     let cascade = prepared.cascade(&dep, Some(&confirm));
-    let (rung, dispatched) = runner_core::dispatch(&cascade, task_name, args)
+    let (rung, dispatched) = super::core::dispatch_with_hints(&cascade, task_name, args, overrides)
         .map_err(|refusal| refusal_error(ctx, task_name, &refusal))?;
     let mut plan = match dispatched {
         runner_core::Dispatch::Builtin(name) => return Ok(Dispatch::Builtin(name)),
@@ -632,6 +632,7 @@ pub(crate) fn refusal_error(
 ) -> anyhow::Error {
     use runner_core::Refusal;
     match refusal {
+        Refusal::Suggestions { .. } => anyhow!("{refusal}"),
         Refusal::Invalid(message) => anyhow!("{message}"),
         Refusal::Observation { kind, message } => io::Error::new(*kind, message.clone()).into(),
         Refusal::UnsupportedFile {

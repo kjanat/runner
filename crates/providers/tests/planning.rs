@@ -2315,6 +2315,37 @@ fn yarn_configuration_requires_a_project_manifest() {
 }
 
 #[test]
+fn task_typos_are_refused_before_yarn_exec_but_exact_tasks_win() {
+    let fixture = Fixture::new();
+    std::fs::write(fixture.0.root.join("package.json"), r#"{"packageManager":"yarn@1.22.22","scripts":{"build":"echo ok","version":"echo custom"}}"#).unwrap();
+    let policy = Policy::default();
+    let project = resolved(&fixture, &policy);
+    let cascade = cascade(&fixture, &project, &policy);
+    assert!(
+        matches!(runner_core::dispatch(&cascade, "biuld", &[]), Err(Refusal::Suggestions { candidates, .. }) if candidates == ["build"])
+    );
+    let (rung, _) =
+        runner_core::dispatch_with_hints(&cascade, "version", &[], &["--version"]).unwrap();
+    assert_eq!(rung.name, "task");
+    let (rung, _) = runner_core::dispatch(&cascade, "build", &[]).unwrap();
+    assert_eq!(rung.name, "task");
+}
+
+#[test]
+fn version_hint_precedes_tool_manager_fallback() {
+    let fixture = Fixture::new();
+    let project = Project {
+        present: vec![fixture.present(ProviderId::Mise)],
+        ..Project::default()
+    };
+    let policy = Policy::default();
+    let cascade = cascade(&fixture, &project, &policy);
+    assert!(
+        matches!(runner_core::dispatch_with_hints(&cascade, "version", &[], &["--version"]), Err(Refusal::Suggestions { candidates, .. }) if candidates == ["--version"])
+    );
+}
+
+#[test]
 fn json5_and_yaml_manifests_declare_the_package_manager() {
     for (name, body) in [
         (

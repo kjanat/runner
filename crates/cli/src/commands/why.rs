@@ -554,6 +554,12 @@ fn build_report<'a>(
             decision.tried = tried.iter().map(|r| r.name).collect();
             selected = None;
         }
+        Err(refusal @ Refusal::Suggestions { tried, .. }) => {
+            decision.strategy = "refused";
+            decision.reason = format!("{refusal}");
+            decision.tried = tried.iter().map(|r| r.name).collect();
+            selected = None;
+        }
         Err(Refusal::Ambiguous { .. }) => {
             decision.strategy = "ambiguous";
             selected = None;

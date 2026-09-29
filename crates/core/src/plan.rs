@@ -127,6 +127,15 @@ pub enum Refusal {
         /// The rungs tried, in order.
         tried: Vec<Rung>,
     },
+    /// A name has close known matches, but no exact local match.
+    Suggestions {
+        /// The requested name.
+        name: String,
+        /// Corrections to offer without executing them.
+        candidates: Vec<String>,
+        /// The rungs visited before offering corrections.
+        tried: Vec<Rung>,
+    },
     /// A task addressed by source or scope does not exist there.
     NoTask {
         /// The task name.
@@ -212,6 +221,17 @@ impl std::fmt::Display for Refusal {
                     .map(|rung| rung.name)
                     .collect::<Vec<_>>()
                     .join(", ")
+            ),
+            Self::Suggestions {
+                name, candidates, ..
+            } => write!(
+                f,
+                "unknown task or command {name:?}; did you mean {}?",
+                candidates
+                    .iter()
+                    .map(|candidate| format!("`{candidate}`"))
+                    .collect::<Vec<_>>()
+                    .join(" or ")
             ),
             Self::NoTask { name, scope, .. } => match scope {
                 Some(scope) => write!(f, "task {name} not found in {scope}"),
@@ -1546,6 +1566,62 @@ pub fn dispatch_from(
     token: &str,
     args: &[String],
 ) -> Result<(Rung, Dispatch), Refusal> {
+    dispatch_from_with_hints(cascade, first, token, args, &[])
+}
+
+/// Walk the cascade with additional command or flag spellings for diagnostics.
+/// Exact local matches win; close spellings refuse speculative exec fallbacks.
+///
+/// # Errors
+/// The refusals [`dispatch`] makes, including [`Refusal::Suggestions`].
+pub fn dispatch_with_hints(
+    cascade: &Cascade<'_>,
+    token: &str,
+    args: &[String],
+    hints: &[&str],
+) -> Result<(Rung, Dispatch), Refusal> {
+    dispatch_from_with_hints(cascade, CASCADE[0].name, token, args, hints)
+}
+
+/// Check spelling before a chain starts, preserving exact local matches.
+/// This only plans local rungs; it never authorizes or executes a plan.
+///
+/// # Errors
+/// Returns a suggestion refusal when no earlier rung resolves the token.
+pub fn precheck_with_hints(
+    cascade: &Cascade<'_>,
+    token: &str,
+    hints: &[&str],
+) -> Result<(), Refusal> {
+    let candidates = crate::suggest::corrections(cascade, token, hints);
+    if candidates.is_empty() {
+        return Ok(());
+    }
+    let mut tried = Vec::new();
+    for rung in CASCADE {
+        tried.push(*rung);
+        if matches!(rung.needs, Need::Cap(Cap::Exec) | Need::ToolManagerExec) {
+            return Err(Refusal::Suggestions {
+                name: token.to_owned(),
+                candidates,
+                tried,
+            });
+        }
+        // A local match or a different planning error belongs to normal dispatch.
+        if !matches!(rung_dispatch(cascade, *rung, token, &[]), Ok(None)) {
+            return Ok(());
+        }
+    }
+    Ok(())
+}
+
+fn dispatch_from_with_hints(
+    cascade: &Cascade<'_>,
+    first: &str,
+    token: &str,
+    args: &[String],
+    hints: &[&str],
+) -> Result<(Rung, Dispatch), Refusal> {
     let mut tried = Vec::new();
     let mut reached = false;
     for rung in CASCADE {
@@ -1553,6 +1629,16 @@ pub fn dispatch_from(
         reached = reached || rung.name == first;
         if !reached {
             continue;
+        }
+        if matches!(rung.needs, Need::Cap(Cap::Exec) | Need::ToolManagerExec) {
+            let candidates = crate::suggest::corrections(cascade, token, hints);
+            if !candidates.is_empty() {
+                return Err(Refusal::Suggestions {
+                    name: token.to_owned(),
+                    candidates,
+                    tried,
+                });
+            }
         }
         let Some(found) = rung_dispatch(cascade, *rung, token, args)? else {
             continue;
@@ -4005,6 +4091,14 @@ mod tests {
             panic!("a tie is ambiguous");
         };
         assert_eq!(candidates.len(), 2);
+        assert_eq!(
+            crate::suggest::corrections(
+                &cascade(&tree, &project, &policy, &registry),
+                "biuld",
+                &[]
+            ),
+            Vec::<String>::new()
+        );
     }
 
     #[test]
