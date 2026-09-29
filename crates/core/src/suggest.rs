@@ -23,7 +23,8 @@ pub(crate) fn corrections(cascade: &Cascade<'_>, name: &str, hints: &[&str]) -> 
                         .as_ref()
                         .is_none_or(|choice| choice.id == task.source)
                 })
-                .map(|task| task.name.as_str()),
+                .map(|task| task.name.as_str())
+                .filter(|name| matches!(crate::select(cascade, name), Ok(Some(_)))),
         )
         .filter(|candidate| *candidate != name && close(name, candidate.trim_start_matches('-')))
         .map(str::to_owned)

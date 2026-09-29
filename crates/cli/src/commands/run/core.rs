@@ -14,16 +14,47 @@ pub(super) fn dispatch_with_hints(
     cascade: &runner_core::Cascade<'_>,
     token: &str,
     args: &[String],
+    overrides: &ResolutionOverrides,
 ) -> Result<(runner_core::Rung, runner_core::Dispatch), runner_core::Refusal> {
+    let hints = command_hints(overrides);
+    let hints: Vec<_> = hints.iter().map(String::as_str).collect();
+    runner_core::dispatch_with_hints(cascade, token, args, &hints)
+}
+
+fn command_hints(overrides: &ResolutionOverrides) -> Vec<String> {
     use clap::CommandFactory;
     let command = crate::args::Cli::command();
-    let hints: Vec<&str> = command
+    command
         .get_subcommands()
-        .filter(|subcommand| !subcommand.is_hide_set())
-        .map(clap::Command::get_name)
-        .chain(["--version"])
-        .collect();
-    runner_core::dispatch_with_hints(cascade, token, args, &hints)
+        .filter(|subcommand| !overrides.run_alias && !subcommand.is_hide_set())
+        .map(|command| command.get_name().to_owned())
+        .chain(["--version".to_owned()])
+        .collect()
+}
+
+pub(super) fn precheck_suggestions(
+    ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
+    token: &str,
+) -> anyhow::Result<()> {
+    if overrides.package.is_some() {
+        return Ok(());
+    }
+    let mut prepared = prepare(ctx, overrides, token)?;
+    let selected = prepared.selected(ctx, token).ok().flatten();
+    let decision = prepared.decision_for(selected);
+    if !super::runtime::replaces_exec(decision.as_ref().map(|decision| decision.pm)) {
+        prepared.clear_runtime();
+    }
+    let dep = |name: &str| {
+        super::local_dep::installed_binary(ctx, name)
+            .map_err(|error| runner_core::Refusal::Invalid(error.to_string()))
+    };
+    let cascade = prepared.cascade(&dep, None);
+    let hints = command_hints(overrides);
+    let hints: Vec<_> = hints.iter().map(String::as_str).collect();
+    runner_core::precheck_with_hints(&cascade, token, &hints)
+        .map_err(|refusal| super::dispatch::refusal_error(ctx, token, &refusal))
 }
 
 use crate::resolver::ResolutionOverrides;
@@ -372,7 +403,7 @@ impl Prepared {
         let mut cascade = self.cascade(&dep, None);
         cascade.policy = &policy;
         cascade.project = &project;
-        let (rung, mut dispatch) = dispatch_with_hints(&cascade, token, &[])?;
+        let (rung, mut dispatch) = dispatch_with_hints(&cascade, token, &[], overrides)?;
         if let runner_core::Dispatch::Plan(plan) = &mut dispatch {
             let entry = if rung.name == "task" {
                 self.selected(ctx, token)?

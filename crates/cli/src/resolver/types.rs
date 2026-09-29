@@ -16,6 +16,8 @@ use runner_core::ProviderId;
 /// table, then the project's, then the default.
 #[derive(Debug, Clone)]
 pub(crate) struct ResolutionOverrides {
+    /// Whether the task was invoked through the task-only `run` alias.
+    pub run_alias: bool,
     /// `--pm`, for the ecosystem the named package manager belongs to.
     pub pm: Option<PmOverride>,
     /// `--package`: the npm package whose declared binary the task token names.
@@ -53,6 +55,7 @@ pub(crate) struct ResolutionOverrides {
 impl Default for ResolutionOverrides {
     fn default() -> Self {
         Self {
+            run_alias: false,
             pm: None,
             package: None,
             source: None,

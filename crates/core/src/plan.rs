@@ -133,6 +133,8 @@ pub enum Refusal {
         name: String,
         /// Corrections to offer without executing them.
         candidates: Vec<String>,
+        /// The rungs visited before offering corrections.
+        tried: Vec<Rung>,
     },
     /// A task addressed by source or scope does not exist there.
     NoTask {
@@ -220,7 +222,9 @@ impl std::fmt::Display for Refusal {
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
-            Self::Suggestions { name, candidates } => write!(
+            Self::Suggestions {
+                name, candidates, ..
+            } => write!(
                 f,
                 "unknown task or command {name:?}; did you mean {}?",
                 candidates
@@ -1579,6 +1583,38 @@ pub fn dispatch_with_hints(
     dispatch_from_with_hints(cascade, CASCADE[0].name, token, args, hints)
 }
 
+/// Check spelling before a chain starts, preserving exact local matches.
+/// This only plans local rungs; it never authorizes or executes a plan.
+///
+/// # Errors
+/// Returns a suggestion refusal when no earlier rung resolves the token.
+pub fn precheck_with_hints(
+    cascade: &Cascade<'_>,
+    token: &str,
+    hints: &[&str],
+) -> Result<(), Refusal> {
+    let candidates = crate::suggest::corrections(cascade, token, hints);
+    if candidates.is_empty() {
+        return Ok(());
+    }
+    let mut tried = Vec::new();
+    for rung in CASCADE {
+        tried.push(*rung);
+        if matches!(rung.needs, Need::Cap(Cap::Exec) | Need::ToolManagerExec) {
+            return Err(Refusal::Suggestions {
+                name: token.to_owned(),
+                candidates,
+                tried,
+            });
+        }
+        // A local match or a different planning error belongs to normal dispatch.
+        if !matches!(rung_dispatch(cascade, *rung, token, &[]), Ok(None)) {
+            return Ok(());
+        }
+    }
+    Ok(())
+}
+
 fn dispatch_from_with_hints(
     cascade: &Cascade<'_>,
     first: &str,
@@ -1600,6 +1636,7 @@ fn dispatch_from_with_hints(
                 return Err(Refusal::Suggestions {
                     name: token.to_owned(),
                     candidates,
+                    tried,
                 });
             }
         }
@@ -4054,6 +4091,14 @@ mod tests {
             panic!("a tie is ambiguous");
         };
         assert_eq!(candidates.len(), 2);
+        assert_eq!(
+            crate::suggest::corrections(
+                &cascade(&tree, &project, &policy, &registry),
+                "biuld",
+                &[]
+            ),
+            Vec::<String>::new()
+        );
     }
 
     #[test]

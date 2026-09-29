@@ -44,8 +44,8 @@ pub use plan::{
     Cascade, Clamp, ConfirmFn, DepBin, DepFn, Dispatch, Plan, Refusal, Shebang, StandIn, TaskRank,
     Trust, Unsafe, decided_by, dependency_plan, discover, dispatch, dispatch_from,
     dispatch_with_hints, ecosystem_of, file_plan, has_local_prefix, is_directly_executable, plan,
-    plan_argv, plan_bin, plan_found, plan_with, ranked_tasks, read_shebang, resolve_path,
-    scope_dir, select,
+    plan_argv, plan_bin, plan_found, plan_with, precheck_with_hints, ranked_tasks, read_shebang,
+    resolve_path, scope_dir, select,
 };
 pub use policy::{Choice, Download, Layer, PerEcosystem, Policy, ScriptPolicy, TrustPolicy};
 pub use probe::{Prober, probe_in, probe_in_dirs, probe_with};

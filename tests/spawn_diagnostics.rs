@@ -239,3 +239,75 @@ fn missing_direct_command_keeps_generic_spawn_error() {
     assert!(!stderr.contains("was selected"), "stderr: {stderr}");
     assert!(!stderr.contains("packageManager"), "stderr: {stderr}");
 }
+
+#[cfg(unix)]
+#[test]
+fn chain_typos_are_refused_before_any_sibling_runs() {
+    for mode in ["-s", "-p"] {
+        let project = bun_project("chain-typo")
+            .executable("empty-path/bun", "#!/bin/sh\nprintf ran > sibling-ran\n");
+        let output = run_in(&project, &["run", mode, "build", "biuld"]);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{stderr}");
+        assert!(stderr.contains("did you mean `build`"), "{stderr}");
+        assert!(!project.path().join("sibling-ran").exists());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn chain_preflight_preserves_exact_host_matches() {
+    let project = bun_project("chain-exact")
+        .executable("empty-path/bun", "#!/bin/sh\nprintf build-ran\n")
+        .executable("empty-path/biuld", "#!/bin/sh\nprintf exact-ran\n");
+    for mode in ["-s", "-p"] {
+        let output = run_in(&project, &["run", mode, "build", "biuld"]);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("exact-ran"));
+    }
+}
+
+#[test]
+fn typo_explanation_preserves_visited_rungs() {
+    let project = bun_project("typo-why");
+    let output = run_in(&project, &["why", "biuld", "--json"]);
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        report["decision"]["tried"],
+        serde_json::json!([
+            "builtin",
+            "path",
+            "task",
+            "file",
+            "dep",
+            "test",
+            "bins",
+            "host",
+            "local-exec"
+        ])
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn run_alias_does_not_suggest_root_cli_commands() {
+    let project =
+        bun_project("alias-hints").executable("empty-path/bun", "#!/bin/sh\nprintf fallback-ran\n");
+    let output = support::command(env!("CARGO_BIN_EXE_run"))
+        .env("PATH", project.path().join("empty-path"))
+        .args(["--dir", project.path().to_str().unwrap(), "doctro"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("fallback-ran"));
+    let output = run_in(&project, &["doctro"]);
+    assert!(String::from_utf8_lossy(&output.stderr).contains("did you mean `doctor`"));
+}

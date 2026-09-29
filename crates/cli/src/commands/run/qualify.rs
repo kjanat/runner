@@ -1,8 +1,8 @@
 //! Pre-flight validation of a task token and the errors it reports.
 //!
-//! [`precheck_task`] selects through the core without spawning, probing or
-//! printing, so the chain executor can check every item before any sibling
-//! dispatches.
+//! [`precheck_task`] selects and checks spelling without executing tasks or
+//! printing. Local file, dependency and PATH lookups preserve exact matches
+//! while the chain executor checks every item before any sibling dispatches.
 
 use std::fmt::Write as _;
 
@@ -147,7 +147,7 @@ pub(crate) fn precheck_task(
         Ok(Some(_)) => Ok(()),
         Ok(None) => match detect_reversed_qualifier(task) {
             Some((source, part)) => Err(reversed_qualifier_error(ctx, task, source, part)),
-            None => Ok(()),
+            None => super::core::precheck_suggestions(ctx, overrides, task),
         },
         Err(refusal) => Err(super::dispatch::refusal_error(ctx, task, &refusal)),
     }
