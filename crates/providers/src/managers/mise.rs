@@ -2,7 +2,8 @@
 
 use runner_core::{
     BinDirs, BinsCap, Capabilities, Ecosystem, ExecCap, Frozen, HealthCap, Hooks, InstallCap, Kind,
-    NameShape, Provider, ProviderId, QuietSupport, Reach, RunTaskCap, ScriptSupport, Signal, t,
+    NameShape, Provider, ProviderId, QuietSupport, Reach, RunTaskCap, ScriptSupport, ShimsCap,
+    Signal, t,
 };
 
 /// The default operation when `[tools.mise].install` says nothing.
@@ -29,6 +30,10 @@ pub const PROVIDER: Provider = Provider {
         Signal::Probe("mise"),
     ],
     caps: Capabilities {
+        shims: Some(ShimsCap {
+            dirs: shims::dirs,
+            resolve: shims::resolve,
+        }),
         task_table: runner_core::TaskTable::Key("tasks"),
         task_priority: 9,
         install: Some(InstallCap {
@@ -84,6 +89,8 @@ pub const PROVIDER: Provider = Provider {
         after_observe: None,
     },
 };
+
+mod shims;
 
 /// Refuse a task whose spec marks a flag required when that flag is absent,
 /// before mise starts the task and whatever it builds.

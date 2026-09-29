@@ -54,12 +54,12 @@ impl<'a> Project<'a> {
     /// which validates `--schema-version` and calls [`Self::build_with_schema`] directly.
     #[cfg(test)]
     pub(crate) fn build(ctx: &'a ProjectContext, overrides: &ResolutionOverrides) -> Self {
-        // `resolve_shims = false` keeps unit tests hermetic, no `volta which` spawns against the test host.
+        // `resolve_shims = false` keeps unit tests hermetic, with no manager queries against the host.
         Self::build_with_schema(ctx, overrides, false)
     }
 
     /// Build the report. `resolve_shims` controls whether PATH-probe hits are classified against a
-    /// Volta installation (one `volta which` spawn per shimmed tool). Diagnostic surfaces
+    /// tool-manager installation (one `which` query per shimmed tool). Diagnostic surfaces
     /// (`doctor`, `info --json`) pass `true`; `list` passes `false` because it drops signals anyway.
     pub(crate) fn build_with_schema(
         ctx: &'a ProjectContext,

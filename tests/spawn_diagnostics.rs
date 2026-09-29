@@ -142,6 +142,44 @@ fn exact_host_binary_wins_over_a_task_spelling_suggestion() {
     assert!(String::from_utf8_lossy(&output.stdout).contains("exact-binary-ran"));
 }
 
+#[cfg(unix)]
+#[test]
+fn doctor_resolves_mise_shims_in_the_inspected_directory() {
+    let project = TempProject::new("mise-shims")
+        .file("package.json", "{}")
+        .executable(
+            "empty-path/mise",
+            r#"#!/bin/sh
+case "$*" in
+  'settings get shims_dir') printf '%s\n' "${0%/*}" ;;
+  'settings get system_shims_dir') exit 1 ;;
+  'which bun') printf '%s/selected-bun\n' "$PWD" ;;
+  'which npm') printf 'npm is not currently active\n' >&2; exit 1 ;;
+  'bin-paths') ;;
+  'tasks --json' | 'ls --missing --json') printf '[]\n' ;;
+  *) printf '{}\n' ;;
+esac
+"#,
+        );
+    for tool in ["bun", "npm"] {
+        std::os::unix::fs::symlink(
+            project.path().join("empty-path/mise"),
+            project.path().join("empty-path").join(tool),
+        )
+        .unwrap();
+    }
+    let output = run_in(&project, &["doctor"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains(&format!(
+            "-> {}/selected-bun (mise)",
+            project.path().display()
+        )),
+        "{stdout}"
+    );
+    assert!(stdout.contains("(mise shim, not provisioned)"), "{stdout}");
+}
+
 fn uv_project(tag: &str) -> TempProject {
     TempProject::new(tag)
         .file(
