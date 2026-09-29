@@ -461,7 +461,7 @@ pub(crate) fn source_signals(
     source: ProviderId,
     resolve_shims: bool,
 ) -> SourceSignals {
-    let probes = probe_signals(&ctx.root, source, resolve_shims);
+    let probes = probe_signals(&ctx.cwd, source, resolve_shims);
     SourceSignals {
         lockfile_pm: observed
             .and_then(|observed| observed.locked(source))

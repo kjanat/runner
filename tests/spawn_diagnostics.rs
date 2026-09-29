@@ -146,7 +146,8 @@ fn exact_host_binary_wins_over_a_task_spelling_suggestion() {
 #[test]
 fn doctor_resolves_mise_shims_in_the_inspected_directory() {
     let project = TempProject::new("mise-shims")
-        .file("package.json", "{}")
+        .file("package.json", r#"{"workspaces":["member"]}"#)
+        .file("member/package.json", "{}")
         .executable(
             "empty-path/mise",
             r#"#!/bin/sh
@@ -154,7 +155,7 @@ case "$*" in
   'settings get shims_dir') printf '%s\n' "${0%/*}" ;;
   'settings get system_shims_dir') exit 1 ;;
   'which bun') printf '%s/selected-bun\n' "$PWD" ;;
-  'which npm') printf 'npm is not currently active\n' >&2; exit 1 ;;
+  'which npm') printf 'npm is a mise bin however it is not currently active\n' >&2; exit 1 ;;
   'bin-paths') ;;
   'tasks --json' | 'ls --missing --json') printf '[]\n' ;;
   *) printf '{}\n' ;;
@@ -168,12 +169,23 @@ esac
         )
         .unwrap();
     }
-    let output = run_in(&project, &["doctor"]);
+    let output = support::command(runner_binary())
+        .env("PATH", project.path().join("empty-path"))
+        .arg("--dir")
+        .arg(project.path().join("member"))
+        .arg("doctor")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout.contains(&format!(
             "-> {}/selected-bun (mise)",
-            project.path().display()
+            project.path().join("member").display()
         )),
         "{stdout}"
     );
@@ -205,9 +217,11 @@ esac
     let output = support::command(runner_binary())
         .env(
             "PATH",
-            std::env::join_paths([shims.clone(), project.path().join("empty-path")]).unwrap(),
+            std::env::join_paths([shims, project.path().join("empty-path")]).unwrap(),
         )
-        .env("MISE_SHIMS_DIR", &shims)
+        .env("HOME", project.path())
+        .env("USERPROFILE", project.path())
+        .env("MISE_SHIMS_DIR", "~/custom-shims")
         .env("MISE_DATA_DIR", project.path().join("different-data"))
         .arg("--dir")
         .arg(project.path())

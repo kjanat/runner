@@ -32,11 +32,19 @@ pub(super) fn dirs() -> Vec<PathBuf> {
     let mut dirs: Vec<_> = user
         .into_iter()
         .chain(system)
+        .map(|dir| expand_home(dir, home.as_deref()))
         .map(|dir| dir.canonicalize().unwrap_or(dir))
         .collect();
     dirs.sort();
     dirs.dedup();
     dirs
+}
+
+fn expand_home(path: PathBuf, home: Option<&Path>) -> PathBuf {
+    match (path.strip_prefix("~"), home) {
+        (Ok(rest), Some(home)) => home.join(rest),
+        _ => path,
+    }
 }
 
 /// Query one path setting, never dump the user's configuration or environment.
@@ -62,20 +70,22 @@ pub(super) fn resolve(tool: &str, dir: &Path) -> Shim {
         .current_dir(dir)
         .output()
     {
-        Ok(output) => classify(output.status.success(), &output.stdout, &output.stderr),
+        Ok(output) => classify(
+            tool,
+            output.status.success(),
+            &output.stdout,
+            &output.stderr,
+        ),
         Err(_) => Shim::Unknown,
     }
 }
 
-fn classify(success: bool, stdout: &[u8], stderr: &[u8]) -> Shim {
+fn classify(tool: &str, success: bool, stdout: &[u8], stderr: &[u8]) -> Shim {
     if !success {
         let error = String::from_utf8_lossy(stderr);
         return if [
-            "not currently active",
-            "is not a mise bin",
-            "not installed",
-            "not found",
-            "no version",
+            format!("{tool} is a mise bin however it is not currently active"),
+            format!("{tool} is not a mise bin."),
         ]
         .iter()
         .any(|message| error.contains(message))
@@ -101,9 +111,40 @@ mod tests {
     use super::*;
 
     #[test]
+    fn expands_only_a_leading_home_component() {
+        let home = std::env::temp_dir().join("mise-home");
+        assert_eq!(
+            expand_home(PathBuf::from("~/.custom/shims"), Some(&home)),
+            home.join(".custom/shims")
+        );
+        assert_eq!(expand_home(PathBuf::from("~"), Some(&home)), home);
+        assert_eq!(
+            expand_home(PathBuf::from("~other/shims"), Some(&home)),
+            PathBuf::from("~other/shims")
+        );
+    }
+
+    #[test]
+    fn configuration_errors_are_not_missing_tools() {
+        for message in [
+            "definitely-not-found: not found",
+            "Variable env.MISSING not found in context",
+            "tool version not installed in template",
+            "no version for template variable",
+            "npm is not a mise bin. Perhaps you need to install it first.",
+        ] {
+            assert_eq!(
+                classify("bun", false, b"", message.as_bytes()),
+                Shim::Unknown
+            );
+        }
+    }
+
+    #[test]
     fn distinguishes_inactive_tools_from_query_failures() {
         assert_eq!(
             classify(
+                "bun",
                 false,
                 b"",
                 b"mise ERROR bun is a mise bin however it is not currently active"
@@ -112,6 +153,7 @@ mod tests {
         );
         assert_eq!(
             classify(
+                "npm",
                 false,
                 b"",
                 b"mise ERROR npm is not a mise bin. Perhaps you need to install it first."
@@ -119,13 +161,13 @@ mod tests {
             Shim::NotProvisioned
         );
         assert_eq!(
-            classify(false, b"", b"mise ERROR config is not trusted"),
+            classify("bun", false, b"", b"mise ERROR config is not trusted"),
             Shim::Unknown
         );
-        assert_eq!(classify(true, b"\n", b""), Shim::Unknown);
+        assert_eq!(classify("bun", true, b"\n", b""), Shim::Unknown);
         let path = std::env::temp_dir().join("mise-installed-bun");
         assert_eq!(
-            classify(true, format!("{}\n", path.display()).as_bytes(), b""),
+            classify("bun", true, format!("{}\n", path.display()).as_bytes(), b""),
             Shim::Resolved(path)
         );
     }
