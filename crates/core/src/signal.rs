@@ -14,6 +14,13 @@ use crate::provider::ProviderId;
 pub enum Signal {
     /// A file in the scope directory.
     File(&'static str),
+    /// A configuration file that is project evidence only beside its manifest.
+    ProjectFile {
+        /// The configuration file name.
+        name: &'static str,
+        /// The manifest required in the same scope directory.
+        manifest: &'static str,
+    },
     /// A file in the scope directory, matched without regard to ASCII case.
     FileCaseless(&'static str),
     /// A file in the scope directory or an ancestor.
@@ -55,7 +62,8 @@ impl Signal {
             | Self::Lockfile(name)
             | Self::EnvVar(name)
             | Self::Probe(name)
-            | Self::FileContent { name, .. } => Some(name),
+            | Self::FileContent { name, .. }
+            | Self::ProjectFile { name, .. } => Some(name),
             Self::ManifestField { files, .. } => files.first().copied(),
             Self::Ask(_) => None,
         }
@@ -69,7 +77,8 @@ impl Signal {
             | Self::FileCaseless(name)
             | Self::FileUpwards(name)
             | Self::Lockfile(name)
-            | Self::FileContent { name, .. } => vec![name],
+            | Self::FileContent { name, .. }
+            | Self::ProjectFile { name, .. } => vec![name],
             Self::ManifestField { files, .. } => files.to_vec(),
             Self::EnvVar(_) | Self::Probe(_) | Self::Ask(_) => Vec::new(),
         }

@@ -31,8 +31,14 @@ pub const PROVIDER: Provider = Provider {
         Signal::Lockfile("yarn.lock"),
         MANIFEST[0],
         MANIFEST[1],
-        Signal::File(".yarnrc.yml"),
-        Signal::File(".yarnrc"),
+        Signal::ProjectFile {
+            name: ".yarnrc.yml",
+            manifest: "package.json",
+        },
+        Signal::ProjectFile {
+            name: ".yarnrc",
+            manifest: "package.json",
+        },
         Signal::Probe("yarn"),
     ],
     caps: Capabilities {
@@ -252,6 +258,7 @@ fn variant_of(
                 line,
             })
         });
+    let configured_project = configured && manifest.is_file();
     Ok(declared
         .or_else(|| {
             from_manifest.map(|line| Hint {
@@ -268,7 +275,7 @@ fn variant_of(
             })
         })
         .or_else(|| {
-            configured.then_some(Hint {
+            configured_project.then_some(Hint {
                 at: config,
                 weight: Weight::Configured,
                 line: "berry",

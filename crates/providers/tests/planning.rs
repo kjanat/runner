@@ -2278,6 +2278,39 @@ fn a_leftover_yarnrc_cannot_override_a_pnpm_declaration() {
 }
 
 #[test]
+fn yarn_configuration_requires_a_project_manifest() {
+    for (name, text) in [
+        (
+            ".yarnrc",
+            "# yarn lockfile v1\nlastUpdateCheck 1781895742328\n",
+        ),
+        (".yarnrc.yml", "nodeLinker: node-modules\n"),
+    ] {
+        let fixture = Fixture::new();
+        std::fs::write(fixture.0.root.join(name), text).unwrap();
+        let policy = Policy::default();
+        let project = resolved(&fixture, &policy);
+        assert!(
+            project
+                .present
+                .iter()
+                .all(|p| p.provider != ProviderId::Yarn)
+        );
+
+        std::fs::write(
+            fixture.0.root.join("package.json"),
+            r#"{"scripts":{"build":"echo ok"}}"#,
+        )
+        .unwrap();
+        let project = resolved(&fixture, &policy);
+        assert_eq!(
+            manager_for_scripts(&project, &policy),
+            Some(ProviderId::Yarn)
+        );
+    }
+}
+
+#[test]
 fn json5_and_yaml_manifests_declare_the_package_manager() {
     for (name, body) in [
         (
