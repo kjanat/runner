@@ -9,6 +9,23 @@ use runner_providers::REGISTRY;
 
 pub(crate) const BUILTINS: &[&str] = &["install", "clean", "list", "info", "completions"];
 
+/// Share CLI spellings between execution and `why`, without changing task precedence.
+pub(super) fn dispatch_with_hints(
+    cascade: &runner_core::Cascade<'_>,
+    token: &str,
+    args: &[String],
+) -> Result<(runner_core::Rung, runner_core::Dispatch), runner_core::Refusal> {
+    use clap::CommandFactory;
+    let command = crate::args::Cli::command();
+    let hints: Vec<&str> = command
+        .get_subcommands()
+        .filter(|subcommand| !subcommand.is_hide_set())
+        .map(clap::Command::get_name)
+        .chain(["--version"])
+        .collect();
+    runner_core::dispatch_with_hints(cascade, token, args, &hints)
+}
+
 use crate::resolver::ResolutionOverrides;
 use crate::types::{ProjectContext, Task};
 use runner_core::Ecosystem;
@@ -355,7 +372,7 @@ impl Prepared {
         let mut cascade = self.cascade(&dep, None);
         cascade.policy = &policy;
         cascade.project = &project;
-        let (rung, mut dispatch) = runner_core::dispatch(&cascade, token, &[])?;
+        let (rung, mut dispatch) = dispatch_with_hints(&cascade, token, &[])?;
         if let runner_core::Dispatch::Plan(plan) = &mut dispatch {
             let entry = if rung.name == "task" {
                 self.selected(ctx, token)?

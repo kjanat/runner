@@ -127,6 +127,13 @@ pub enum Refusal {
         /// The rungs tried, in order.
         tried: Vec<Rung>,
     },
+    /// A name has close known matches, but no exact local match.
+    Suggestions {
+        /// The requested name.
+        name: String,
+        /// Corrections to offer without executing them.
+        candidates: Vec<String>,
+    },
     /// A task addressed by source or scope does not exist there.
     NoTask {
         /// The task name.
@@ -212,6 +219,15 @@ impl std::fmt::Display for Refusal {
                     .map(|rung| rung.name)
                     .collect::<Vec<_>>()
                     .join(", ")
+            ),
+            Self::Suggestions { name, candidates } => write!(
+                f,
+                "unknown task or command {name:?}; did you mean {}?",
+                candidates
+                    .iter()
+                    .map(|candidate| format!("`{candidate}`"))
+                    .collect::<Vec<_>>()
+                    .join(" or ")
             ),
             Self::NoTask { name, scope, .. } => match scope {
                 Some(scope) => write!(f, "task {name} not found in {scope}"),
@@ -1546,6 +1562,30 @@ pub fn dispatch_from(
     token: &str,
     args: &[String],
 ) -> Result<(Rung, Dispatch), Refusal> {
+    dispatch_from_with_hints(cascade, first, token, args, &[])
+}
+
+/// Walk the cascade with additional command or flag spellings for diagnostics.
+/// Exact local matches win; close spellings refuse speculative exec fallbacks.
+///
+/// # Errors
+/// The refusals [`dispatch`] makes, including [`Refusal::Suggestions`].
+pub fn dispatch_with_hints(
+    cascade: &Cascade<'_>,
+    token: &str,
+    args: &[String],
+    hints: &[&str],
+) -> Result<(Rung, Dispatch), Refusal> {
+    dispatch_from_with_hints(cascade, CASCADE[0].name, token, args, hints)
+}
+
+fn dispatch_from_with_hints(
+    cascade: &Cascade<'_>,
+    first: &str,
+    token: &str,
+    args: &[String],
+    hints: &[&str],
+) -> Result<(Rung, Dispatch), Refusal> {
     let mut tried = Vec::new();
     let mut reached = false;
     for rung in CASCADE {
@@ -1553,6 +1593,15 @@ pub fn dispatch_from(
         reached = reached || rung.name == first;
         if !reached {
             continue;
+        }
+        if matches!(rung.needs, Need::Cap(Cap::Exec) | Need::ToolManagerExec) {
+            let candidates = crate::suggest::corrections(cascade, token, hints);
+            if !candidates.is_empty() {
+                return Err(Refusal::Suggestions {
+                    name: token.to_owned(),
+                    candidates,
+                });
+            }
         }
         let Some(found) = rung_dispatch(cascade, *rung, token, args)? else {
             continue;

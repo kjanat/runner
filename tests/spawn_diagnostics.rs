@@ -104,6 +104,44 @@ fn bun_project(tag: &str) -> TempProject {
     )
 }
 
+#[test]
+fn unknown_names_offer_hints_without_dispatching() {
+    let project = bun_project("typos");
+    for (name, hint) in [
+        ("biuld", "build"),
+        ("instlal", "install"),
+        ("version", "--version"),
+        ("doctro", "doctor"),
+    ] {
+        let output = run_in(&project, &[name]);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{name}");
+        assert!(
+            stderr.contains("did you mean") && stderr.contains(hint),
+            "{stderr}"
+        );
+        assert!(!stderr.contains("→"), "must not dispatch: {stderr}");
+    }
+    let output = run_in(&project, &["why", "biuld"]);
+    assert!(String::from_utf8_lossy(&output.stdout).contains("did you mean `build`"));
+}
+
+#[cfg(unix)]
+#[test]
+fn exact_host_binary_wins_over_a_task_spelling_suggestion() {
+    let project = bun_project("exact-before-typo").executable(
+        "empty-path/biuld",
+        "#!/bin/sh\nprintf 'exact-binary-ran\\n'\n",
+    );
+    let output = run_in(&project, &["biuld"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("exact-binary-ran"));
+}
+
 fn uv_project(tag: &str) -> TempProject {
     TempProject::new(tag)
         .file(
