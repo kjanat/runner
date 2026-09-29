@@ -1,0 +1,11 @@
+runner is for people who bounce between codebases and refuse to memorize
+each repo's private little task-running religion.
+
+Instead of guessing whether a project wants npm run, pnpm exec, bunx,
+cargo, uv run, deno task, turbo, make, just, etc., you type `run <task>`
+and runner detects the package manager / task runner in use and dispatches
+to it. Shell completion picks up the current task list from package.json,
+turbo.json, Justfile and friends, not a static snapshot.
+
+This package installs the prebuilt `runner` and `run` binaries from the
+upstream GitHub release, together with bash, zsh and fish completions.

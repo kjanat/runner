@@ -19,6 +19,36 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - [ ] Minor bumps: after publish, raise the `runner-run` catalog range to `^0.Y` and refresh `bun.lock`; `@latest` breaks `--frozen-lockfile`.
 - [ ] First release with `runner-run-core`, `runner-run-schemes` and `runner-run-providers`: add a `CARGO_REGISTRY_TOKEN` secret to the `crates-io` environment, release, then add a trusted publisher for each (workflow `release.yml`, environment `crates-io`) and delete the secret.
 
+### Added
+
+- FreeBSD distribution channel. A prebuilt port (`freebsd/runner`,
+  package name `runner-bin`) installs the `runner` + `run` binaries from
+  the GitHub release `*-unknown-freebsd` tarballs the `release.yml` matrix
+  already publishes — no recompile — for `amd64` and `aarch64`. Since
+  FreeBSD has no AUR-style push-to-git remote, the channel ships an
+  installable amd64 `.pkg` attached to each release:
+  `pkg add https://github.com/kjanat/runner/releases/latest/download/runner-freebsd-amd64.pkg`.
+- FreeBSD completions shipped by the port and auto-loaded from the
+  canonical `${LOCALBASE}` dirs: bash at
+  `share/bash-completion/completions/{runner,run}`, zsh at
+  `share/zsh/site-functions/{_runner,_run}`, fish at
+  `share/fish/vendor_completions.d/{runner,run}.fish`. PowerShell has no
+  autoload convention, so the pwsh script is installed at
+  `share/runner/runner.ps1` for users to dot-source from their `$PROFILE`.
+- `.github/workflows/freebsd-release.yml` builds and attaches the `.pkg`
+  on every `release: published` event (with manual `workflow_dispatch` +
+  `dry-run` for validation). It runs the real ports build (`make package`)
+  inside a FreeBSD VM (`vmactions/freebsd-vm`) against a blobless, sparse
+  checkout of the ports `Mk/` infrastructure, so the staging QA and plist
+  checks gate every release. Third-party `uses:` pinned to commit SHAs.
+- `.github/scripts/publish/freebsd-prepare.sh` rewrites `DISTVERSION` and
+  regenerates `distinfo` (per-arch `SHA256` + `SIZE`) from the release's
+  published `.sha256` companion assets and asset metadata. The mandatory
+  `amd64` entry aborts on a missing asset; the `experimental` `aarch64`
+  build is skipped with a warning when absent. Strict semver regex on the
+  version input refuses anything containing `&`, `/`, `\`, or newlines
+  before any `sed` runs.
+
 ## [0.27.0] - 2026-09-27
 
 ### Added

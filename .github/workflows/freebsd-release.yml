@@ -1,0 +1,91 @@
+name: freebsd-release
+run-name: >-
+  ${{ format('freebsd publish {0}', case(github.event_name == 'release',
+                                         github.event.release.tag_name,
+                                         inputs.tag)) }}
+
+on:
+  release: { types: [published] }
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to publish (e.g. v0.12.0)
+        required: true
+        type: string
+      dry-run:
+        description: Prepare + build the port in the FreeBSD VM but do not upload
+        required: true
+        default: false
+        type: boolean
+
+permissions: { contents: read }
+
+jobs:
+  publish:
+    name: build + attach freebsd pkg
+    runs-on: ubuntu-latest
+    # Serialize so a manual dispatch and a release-published run can't race
+    # the same release's asset upload.
+    concurrency: { group: freebsd-publish, cancel-in-progress: false }
+    permissions: { contents: write }
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ case(github.event_name == 'release', github.event.release.tag_name, inputs.tag) }}
+      DRY_RUN: ${{ inputs.dry-run || 'false' }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with: { persist-credentials: false }
+
+      # Bump DISTVERSION + regenerate distinfo from the published release
+      # assets, so the VM build below fetches and checksums the tarballs for
+      # exactly this tag (not the checked-in reference snapshot).
+      - name: prepare port (version + distinfo)
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          bash "${GITHUB_WORKSPACE}/.github/scripts/publish/freebsd-prepare.sh" "${version}"
+
+      # Build the port the canonical way — `make package` runs the staging
+      # QA + plist checks, so a drifted PLIST_FILES fails here instead of
+      # shipping a broken package. We only need the ports `Mk/` infra, so a
+      # blobless, sparse clone keeps the checkout tiny.
+      - name: build pkg in FreeBSD VM
+        uses: vmactions/freebsd-vm@a6de9343ef5747433d9c25784c90e84998b9d69a # v1.4.6
+        with:
+          usesh: true
+          prepare: |
+            pkg install -y git
+          run: |
+            set -eu
+            ws="$(pwd)"
+            git clone --filter=blob:none --depth 1 --sparse \
+              https://github.com/freebsd/freebsd-ports /usr/ports
+            cd /usr/ports
+            git sparse-checkout set Mk Keywords Templates
+            mkdir -p /usr/ports/devel
+            cp -R "${ws}/freebsd/runner" /usr/ports/devel/runner
+            cd /usr/ports/devel/runner
+            # check-plist fails on drift in either direction (a listed file
+            # that wasn't staged, or a staged file that isn't listed).
+            make BATCH=yes stage check-plist package
+            pkgfile="$(make -V PKGFILE)"
+            echo "built ${pkgfile}"
+            mkdir -p "${ws}/freebsd/pkgout"
+            cp "${pkgfile}" "${ws}/freebsd/pkgout/runner-freebsd-amd64.pkg"
+
+      - name: checksum
+        run: |
+          set -euo pipefail
+          cd freebsd/pkgout
+          sha256sum runner-freebsd-amd64.pkg > runner-freebsd-amd64.pkg.sha256
+          ls -l
+          cat runner-freebsd-amd64.pkg.sha256
+
+      - name: upload pkg to release
+        if: env.DRY_RUN != 'true'
+        run: |
+          set -euo pipefail
+          gh release upload "${RELEASE_TAG}" \
+            freebsd/pkgout/runner-freebsd-amd64.pkg \
+            freebsd/pkgout/runner-freebsd-amd64.pkg.sha256 \
+            --repo "${GITHUB_REPOSITORY}" --clobber

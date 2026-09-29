@@ -157,6 +157,12 @@ paru -S runner-run-bin # or `paru -S runner-run` (builds from source)
 yay  -S runner-run-bin # .. `yay  -S runner-run`
 ```
 
+Or on FreeBSD:
+
+```sh
+pkg add https://github.com/kjanat/runner/releases/latest/download/runner-freebsd-amd64.pkg
+```
+
 <details>
 <summary><i>Other install methods</i></summary>
 
@@ -189,6 +195,12 @@ docker run --rm --entrypoint /run -v "$PWD:/w" kjanat/runner build
 
 Without `-v`/`--volume`, the container sees no project.
 Only `--version` or `--help` are meaningful without a mount.
+
+```sh
+# FreeBSD/aarch64: build the prebuilt port locally (distinfo already
+# carries the aarch64 distfile checksum), or fetch the amd64 .pkg above.
+cd /usr/ports/devel/runner && make package
+```
 
 ```sh
 # One-liner (latest):
