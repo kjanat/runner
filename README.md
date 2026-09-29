@@ -1,9 +1,20 @@
 # runner
 
 <picture height="160" align="right" alt="runner logo">
-  <source media="(prefers-color-scheme: dark)" srcset="https://raw.github.com/kjanat/runner/ea333a0e/branding/wordmark-dark.svg">
-  <source media="(prefers-color-scheme: light)" srcset="https://raw.github.com/kjanat/runner/f90940f8/branding/wordmark.svg">
-  <img alt="Fallback image" height="160" align="right" src="https://raw.github.com/kjanat/runner/ea333a0e/branding/wordmark-dark.svg">
+	<source
+		media="(prefers-color-scheme: dark)"
+		srcset="https://raw.github.com/kjanat/runner/ea333a0e/branding/wordmark-dark.svg"
+	>
+	<source
+		media="(prefers-color-scheme: light)"
+		srcset="https://raw.github.com/kjanat/runner/f90940f8/branding/wordmark.svg"
+	>
+	<img
+		alt="Fallback image"
+		height="160"
+		align="right"
+		src="https://raw.github.com/kjanat/runner/ea333a0e/branding/wordmark-dark.svg"
+	>
 </picture>
 
 <!--
@@ -149,7 +160,11 @@ cargo binstall runner-run
 Or on Arch Linux:
 
 <a href="https://repology.org/project/runner-run/versions">
-    <img src="https://repology.org/badge/vertical-allrepos/runner-run.svg" alt="Packaging status" align="right">
+	<img
+		src="https://repology.org/badge/vertical-allrepos/runner-run.svg"
+		alt="Packaging status"
+		align="right"
+	>
 </a>
 
 ```sh

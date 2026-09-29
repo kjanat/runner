@@ -76,7 +76,7 @@ function _clap_dynamic_completer_{NAME}() {
 	local __runner_ln
 	for __runner_ln in "${__runner_raw[@]}"; do
 		local __runner_g="${__runner_ln%%$'\x1f'*}"
-		if ((!${__runner_grps[(Ie)$__runner_g]})); then
+		if ((! ${__runner_grps[(Ie)$__runner_g]})); then
 			__runner_grps+=("$__runner_g")
 		fi
 	done
