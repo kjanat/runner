@@ -2207,8 +2207,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   `.cargo/config.toml` chain (cwd up to filesystem root, then
   `$CARGO_HOME/config{,.toml}`) is merged with cargo's precedence
   rules, recursive alias chains are expanded so `runner list` shows
-  the fully-resolved command (`l → clippy --all-targets --all-features
-  -- -D warnings`, `recursive_example → run --release --example
+  the fully-resolved command (`l → clippy --all-targets --all-features -- -D warnings`, `recursive_example → run --release --example
   recursions`), and built-ins (`b/c/d/t/r/rm`) always surface even in
   projects without a user config. User attempts to redefine a built-in
   are silently ignored to match cargo's own rule. `runner run <alias>`
@@ -2365,8 +2364,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   `.cargo/config.toml` chain (cwd up to filesystem root, then
   `$CARGO_HOME/config{,.toml}`) is merged with cargo's precedence
   rules, recursive alias chains are expanded so `runner list` shows
-  the fully-resolved command (`l → clippy --all-targets --all-features
-  -- -D warnings`, `recursive_example → run --release --example
+  the fully-resolved command (`l → clippy --all-targets --all-features -- -D warnings`, `recursive_example → run --release --example
   recursions`), and built-ins (`b/c/d/t/r/rm`) always surface even in
   projects without a user config. User attempts to redefine a built-in
   are silently ignored to match cargo's own rule. `runner run <alias>`

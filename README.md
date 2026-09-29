@@ -149,7 +149,7 @@ cargo binstall runner-run
 Or on Arch Linux:
 
 <a href="https://repology.org/project/runner-run/versions">
-    <img src="https://repology.org/badge/vertical-allrepos/runner-run.svg" alt="Packaging status" align="right">
+  <img src="https://repology.org/badge/vertical-allrepos/runner-run.svg" alt="Packaging status" align="right">
 </a>
 
 ```sh

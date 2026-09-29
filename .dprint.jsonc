@@ -2,7 +2,27 @@
 	"$schema": "https://dprint.dev/schemas/v0.json",
 	"useTabs": true,
 	"json": { "jsonTrailingCommaFiles": [".zed/settings.json"], "trailingCommas": "jsonc" },
-	"markdown": { "textWrap": "maintain", "emphasisKind": "asterisks" },
+	"markdown": {
+		"emphasisKind": "asterisks",
+		"lineWidth": 100,
+		"textWrap": "maintain",
+		"codeBlock.useTabs": false,
+		"codeBlock.preserveIndentation": true,
+		"html.useTabs": false,
+		"html.preferSingleLine": true,
+		"html.skipFormat": true,
+		"overrides": [
+			{
+				"files": [
+					"**/AGENTS.md",
+					"**/CLAUDE.md",
+					"**/CHANGELOG.md",
+				],
+				"lineWidth": 9999,
+				"textWrap": "maintain",
+			},
+		],
+	},
 	"markup": {
 		"associations": ["!**/*.svg"],
 		"ignoreCommentDirective": "dprint-ignore",
