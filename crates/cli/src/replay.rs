@@ -133,25 +133,18 @@ impl Capture {
             return Ok(());
         }
         file.seek(SeekFrom::Start(0))?;
-        // Treat task names as text too: neither newlines nor workflow commands
-        // from a name may alter the recap's structure.
-        let name = self
-            .name
-            .replace(['\r', '\n'], " ")
-            .replace("::", ": :")
-            .replace("##[", "## [");
-        let title = format!("{name} — exit {code}");
+        let title = format!("{} — exit {code}", self.name);
         // Live stderr can end mid-line. Workflow commands must begin on a
         // fresh line, and a plain failure title needs its own line too.
         writeln!(out)?;
         if grouped {
-            writeln!(
-                out,
-                "{}",
-                actions_rs::WorkflowCommand::new("group").message(&title)
-            )?;
+            // Command data escaping belongs to actions-rs; preserve the title.
+            actions_rs::WorkflowCommand::new("group")
+                .message(title)
+                .issue_to(&mut *out)?;
         } else {
-            inert(title.as_bytes(), out)?;
+            // Plain text has no command envelope: keep it on one inert line.
+            inert(title.replace(['\r', '\n'], " ").as_bytes(), out)?;
         }
         let replay = inert(&mut *file, out);
         drop(file);
@@ -160,7 +153,7 @@ impl Capture {
         }
         // Close even when reading the spool failed.
         if grouped {
-            writeln!(out, "::endgroup::")?;
+            actions_rs::WorkflowCommand::new("endgroup").issue_to(&mut *out)?;
         }
         replay
     }
@@ -169,6 +162,8 @@ impl Capture {
 /// Neutralize both workflow-command syntaxes, including commands containing
 /// properties and legacy commands embedded mid-line. Bounded even for a child
 /// that writes gigabytes without a newline. Live output remains byte-for-byte.
+/// actions-rs 0.1's `stop_commands` guard writes to stdout, so it cannot protect
+/// this stderr-only replay without adding markers to the task's data stream.
 fn inert(input: impl Read, out: &mut impl Write) -> io::Result<()> {
     let mut previous = [0; 2];
     let mut last = None;
@@ -257,8 +252,61 @@ pub(crate) fn wait(child: &mut Child, capture: Option<Arc<Capture>>) -> io::Resu
 
 #[cfg(test)]
 mod tests {
-    use super::inert;
+    use super::{Capture, inert};
+    use crate::config::{FailureReplay, ReplayOutput};
     use std::io::{self, Read};
+    use std::sync::Mutex;
+    use std::sync::atomic::AtomicBool;
+
+    fn render_failure(name: &str, failure: FailureReplay) -> Vec<u8> {
+        let capture = Capture {
+            name: name.to_owned(),
+            policy: ReplayOutput {
+                failure,
+                ..ReplayOutput::default()
+            },
+            file: Mutex::new(tempfile::tempfile().unwrap()),
+            code: Mutex::new(Some(7)),
+            lost: AtomicBool::new(false),
+            closed: AtomicBool::new(false),
+        };
+        capture.append(b"failure details\n").unwrap();
+        let mut output = Vec::new();
+        capture.render(1, &mut output).unwrap();
+        output
+    }
+
+    #[test]
+    fn grouped_title_preserves_text_with_command_data_escaping() {
+        let output = render_failure(
+            "build::test %0A\r\n::error::injected\n##[error]legacy",
+            FailureReplay::Grouped,
+        );
+        assert_eq!(
+            output,
+            concat!(
+                "\n::group::build::test %250A%0D%0A::error::injected%0A##[error]legacy — exit 7\n",
+                "failure details\n::endgroup::\n",
+            )
+            .as_bytes(),
+        );
+    }
+
+    #[test]
+    fn plain_title_is_one_inert_line_without_command_encoding() {
+        let output = render_failure(
+            "build::test %0A\r\n::error::injected\n##[error]legacy",
+            FailureReplay::Plain,
+        );
+        assert_eq!(
+            output,
+            concat!(
+                "\nbuild: :test %0A  : :error: :injected ## [error]legacy — exit 7\n",
+                "failure details\n",
+            )
+            .as_bytes(),
+        );
+    }
 
     /// Force a pipe-like reader to split commands at every possible offset.
     struct Chunks<'a> {
