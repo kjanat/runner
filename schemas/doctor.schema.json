@@ -469,6 +469,15 @@
         }
       ]
     },
+    "FailureReplay": {
+      "type": "string",
+      "enum": [
+        "auto",
+        "grouped",
+        "plain",
+        "off"
+      ]
+    },
     "Invocation": {
       "description": "How this report came to be: the exact process invocation.",
       "type": "object",
@@ -519,6 +528,7 @@
         "parallel_buffer",
         "progress",
         "quiet",
+        "replay",
         "summary",
         "timing",
         "tool",
@@ -552,6 +562,9 @@
             "silent",
             "mute"
           ]
+        },
+        "replay": {
+          "$ref": "#/$defs/ReplayOutput"
         },
         "summary": {
           "type": "boolean"
@@ -707,6 +720,25 @@
       },
       "additionalProperties": false
     },
+    "ReplayOutput": {
+      "description": "`[output.replay]`: failed tasks are plain when only one failed, grouped\notherwise. Successful tasks are not repeated unless requested.",
+      "type": "object",
+      "required": [
+        "failure",
+        "success"
+      ],
+      "properties": {
+        "failure": {
+          "$ref": "#/$defs/FailureReplay",
+          "default": "auto"
+        },
+        "success": {
+          "$ref": "#/$defs/SuccessReplay",
+          "default": "off"
+        }
+      },
+      "additionalProperties": false
+    },
     "ResolutionPolicy": {
       "description": "Self-description of the task-selection policy, so consumers don't\nhardcode runner's precedence rules.",
       "type": "object",
@@ -858,6 +890,14 @@
         }
       },
       "additionalProperties": false
+    },
+    "SuccessReplay": {
+      "type": "string",
+      "enum": [
+        "grouped",
+        "plain",
+        "off"
+      ]
     },
     "TaskReport": {
       "type": "object",

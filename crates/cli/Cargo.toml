@@ -48,6 +48,10 @@ path              = "src/bin/run.rs"
 required-features = ["run"]
 
 [[test]]
+name = "actions_replay"
+path = "../../tests/actions_replay.rs"
+
+[[test]]
 name = "builtin_verb_dispatch"
 path = "../../tests/builtin_verb_dispatch.rs"
 
@@ -124,6 +128,7 @@ semver.workspace        = true
 serde.workspace         = true
 serde_json.workspace    = true
 shlex.workspace         = true
+tempfile.workspace      = true
 terminal_size.workspace = true
 unicode-width.workspace = true
 yaml-rust2.workspace    = true

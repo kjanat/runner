@@ -177,19 +177,18 @@ fn dispatch_arrow_prints_without_quiet() {
 }
 
 #[test]
-fn quiet_keeps_github_actions_group_markers_off_stdout() {
+fn actions_stdout_is_clean_with_and_without_quiet() {
     if !tool_available("make") {
         eprintln!("skipping: `make` not found on PATH");
         return;
     }
-    // Positive control: under Actions the group markers are the whole point,
-    // so they must be there without `--quiet`.
+    // A caller no longer needs quiet mode to keep task stdout usable.
     let shown_proj = make_project("gha-on");
     let shown = run_in(shown_proj.path(), &[(GITHUB_ACTIONS, "true")], &["greet"]);
     let shown_out = String::from_utf8_lossy(&shown.stdout);
     assert!(
-        shown_out.contains(&group("runner: greet")) && shown_out.contains(&endgroup()),
-        "expected a group to suppress. stdout: {shown_out}",
+        !shown_out.contains(&group("")) && !shown_out.contains(&endgroup()),
+        "stdout must be clean without quiet. stdout: {shown_out}",
     );
 
     // #86: a parent parsing this stdout (`npm pack --json` piped into a

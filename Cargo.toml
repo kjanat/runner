@@ -19,7 +19,7 @@ runner-run-providers = { path = "crates/providers", version = "0.27.0" }
 runner-run-schemes   = { path = "crates/schemes", version = "0.27.0" }
 
 # Own
-actions-rs       = "0.1"
+actions-rs       = "0.1.2"
 json-schema-sort = { version = "0.1", default-features = false }
 
 # 3rd party

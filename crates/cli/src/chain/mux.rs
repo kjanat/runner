@@ -30,6 +30,12 @@ pub(crate) trait LineSink: Send + Sync {
     /// # Errors
     /// Returns the failed write.
     fn emit(&self, prefix: &str, is_stderr: bool, line: &str) -> io::Result<()>;
+
+    /// Undecorated bytes for Actions streams, including partial lines and
+    /// non-UTF-8 data. Only streaming sinks use this path.
+    fn emit_raw(&self, _is_stderr: bool, _bytes: &[u8]) -> io::Result<()> {
+        Err(io::Error::other("sink does not support raw output"))
+    }
 }
 
 /// Production sink. Locks `std::io::stdout` / `std::io::stderr` per
@@ -37,6 +43,16 @@ pub(crate) trait LineSink: Send + Sync {
 pub(crate) struct StdioSink;
 
 impl LineSink for StdioSink {
+    fn emit_raw(&self, is_stderr: bool, bytes: &[u8]) -> io::Result<()> {
+        if is_stderr {
+            io::stderr().lock().write_all(bytes)
+        } else {
+            let mut out = io::stdout().lock();
+            out.write_all(bytes)?;
+            out.flush()
+        }
+    }
+
     fn emit(&self, prefix: &str, is_stderr: bool, line: &str) -> io::Result<()> {
         let write = |h: &mut dyn Write| {
             if prefix.is_empty() {
@@ -73,6 +89,14 @@ impl SelectiveSink {
 }
 
 impl LineSink for SelectiveSink {
+    fn emit_raw(&self, is_stderr: bool, bytes: &[u8]) -> io::Result<()> {
+        if (is_stderr && self.stderr) || (!is_stderr && self.stdout) {
+            self.inner.emit_raw(is_stderr, bytes)
+        } else {
+            Ok(())
+        }
+    }
+
     fn emit(&self, prefix: &str, is_stderr: bool, line: &str) -> io::Result<()> {
         if (is_stderr && self.stderr) || (!is_stderr && self.stdout) {
             self.inner.emit(prefix, is_stderr, line)
@@ -103,6 +127,14 @@ impl Delivery {
 }
 
 impl LineSink for Delivery {
+    fn emit_raw(&self, is_stderr: bool, bytes: &[u8]) -> io::Result<()> {
+        let written = self.inner.emit_raw(is_stderr, bytes);
+        if written.is_err() {
+            self.failed.store(true, Ordering::SeqCst);
+        }
+        written
+    }
+
     fn emit(&self, prefix: &str, is_stderr: bool, line: &str) -> io::Result<()> {
         let written = self.inner.emit(prefix, is_stderr, line);
         if written.is_err() {
@@ -379,6 +411,33 @@ where
                     if sink.emit(&prefix, is_stderr, &line).is_err() {
                         lines.by_ref().for_each(drop);
                         return;
+                    }
+                }
+            })
+        })
+        .collect()
+}
+
+/// Preserve bytes on Actions' captured streams; no line prefixes, decoding or
+/// synthetic newlines. Continue draining even if the destination is closed.
+pub(crate) fn spawn_raw_readers<R: Read + Send + 'static>(
+    streams: Vec<(bool, R)>,
+    sink: &Arc<dyn LineSink>,
+) -> Vec<JoinHandle<()>> {
+    streams
+        .into_iter()
+        .map(|(is_stderr, mut reader)| {
+            let sink = Arc::clone(sink);
+            std::thread::spawn(move || {
+                let mut bytes = [0; 8192];
+                loop {
+                    match reader.read(&mut bytes) {
+                        Ok(0) => break,
+                        Ok(count) => {
+                            let _ = sink.emit_raw(is_stderr, &bytes[..count]);
+                        }
+                        Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                        Err(_) => break,
                     }
                 }
             })

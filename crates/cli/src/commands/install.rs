@@ -63,10 +63,6 @@ pub(crate) fn install_pms(
         super::authorize_fetch(overrides, "install", "install")?;
     }
 
-    // Collapse the whole install (single- or multi-PM) under one
-    // `runner: install` GitHub Actions group when enabled.
-    let group = super::task_group(overrides, "install", "install");
-
     if let Some(runner) = tools
         && let Some(code) = run_tools_step(&execution, runner, overrides)?
     {
@@ -77,7 +73,6 @@ pub(crate) fn install_pms(
     }
     if plan.pms.is_empty() {
         if let Some(task) = task {
-            drop(group);
             return super::run::run(
                 ctx,
                 overrides,
@@ -254,6 +249,12 @@ fn run_tool_operation(
         crate::render::explain::print_command(overrides, &cmd);
         return Ok(None);
     }
+    let capture = crate::replay::prepare(
+        &mut cmd,
+        overrides,
+        "install",
+        &format!("install {}", runner.label()),
+    )?;
     let mut child = match runner_core::execute::spawn(&plan, &mut cmd) {
         Ok(child) => child,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -276,7 +277,7 @@ fn run_tool_operation(
             )));
         }
     };
-    let status = child.wait()?;
+    let status = crate::replay::wait(&mut child, capture)?;
     if status.success() {
         return Ok(None);
     }
@@ -538,10 +539,16 @@ fn install_single(
         crate::render::explain::print_command(overrides, &cmd);
         return Ok(0);
     }
+    let capture = crate::replay::prepare(
+        &mut cmd,
+        overrides,
+        "install",
+        &format!("install {}", pm.label()),
+    )?;
     let mut child = runner_core::execute::spawn(&plan, &mut cmd)
         .map_err(|error| spawn_error(pm, cmd.get_program(), error))?;
-    let status =
-        wait_or_reap(&mut child).map_err(|error| wait_error(pm, cmd.get_program(), error))?;
+    let status = crate::replay::wait(&mut child, capture)
+        .map_err(|error| wait_error(pm, cmd.get_program(), error))?;
     Ok(if status.success() {
         0
     } else {
@@ -684,9 +691,14 @@ fn run_lane(
                 tool::TaskStream::Inherit => Stdio::piped(),
                 tool::TaskStream::Discard => Stdio::null(),
             });
+        let capture =
+            overrides
+                .replay
+                .start(overrides, "install", &format!("install {}", pm.label()))?;
         let mut child = runner_core::execute::spawn(&plan, &mut cmd)
             .map_err(|error| spawn_error(*pm, cmd.get_program(), error))?;
-        let prefix = if overrides.emits_groups() {
+        let in_gha = actions_rs::env::is_github_actions();
+        let prefix = if !in_gha && overrides.emits_groups() {
             render_prefix(pm.label(), width, colorize)
         } else {
             String::new()
@@ -698,19 +710,37 @@ fn run_lane(
         if let Some(stderr) = child.stderr.take() {
             streams.push((prefix, true, Box::new(stderr)));
         }
-        let delivery = Arc::new(Delivery::new(Arc::clone(sink)));
-        let readers = spawn_readers(streams, &(delivery.clone() as Arc<dyn LineSink>));
+        let delivery = Arc::new(Delivery::new(Arc::new(crate::replay::Tee {
+            inner: Arc::clone(sink),
+            capture: capture.clone(),
+        })));
+        let readers = if in_gha {
+            crate::chain::mux::spawn_raw_readers(
+                streams
+                    .into_iter()
+                    .map(|(_, err, reader)| (err, reader))
+                    .collect(),
+                &(delivery.clone() as Arc<dyn LineSink>),
+            )
+        } else {
+            spawn_readers(streams, &(delivery.clone() as Arc<dyn LineSink>))
+        };
 
         let waited = wait_or_reap(&mut child);
         for handle in readers {
             join_reader_thread(handle);
         }
         let status = waited.map_err(|error| wait_error(*pm, cmd.get_program(), error))?;
-        if !status.success() {
-            return Ok(Some((*pm, super::exit_code(status))));
+        let code = if status.success() && delivery.failed() {
+            1
+        } else {
+            super::exit_code(status)
+        };
+        if let Some(capture) = capture {
+            capture.complete(code);
         }
-        if delivery.failed() {
-            return Ok(Some((*pm, 1)));
+        if code != 0 {
+            return Ok(Some((*pm, code)));
         }
     }
     Ok(None)

@@ -311,10 +311,14 @@ fn config_layer_sets_the_runtime() {
         eprintln!("skipping: bun or node not found on PATH");
         return;
     }
-    let proj = probe_project("config").file("runner.toml", "[runtime]\njs = \"bun\"\n");
+    let proj = probe_project("config").file("runner.toml", "[runtime]\njavascript = \"bun\"\n");
     let output = run_in(proj.path(), &["-q", "which"]);
 
-    assert_stdout_has(&output, "BUN", "[runtime].js must apply without a flag");
+    assert_stdout_has(
+        &output,
+        "BUN",
+        "[runtime].javascript must apply without a flag",
+    );
 }
 
 #[test]

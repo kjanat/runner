@@ -87,13 +87,14 @@ pub(crate) fn run_with_key(
         crate::render::explain::print_command(overrides, spawn.command_mut());
         return Ok((0, spawn.task_key.clone()));
     }
-    // Wrap the child's output in a collapsible GitHub Actions group
-    // (`runner: <task>`) when enabled. Opened after resolution so the `→`
-    // dispatch arrow stays visible above the fold and a resolver error
-    // never leaves an empty group; the guard closes the group on drop.
     let key = spawn.task_key.clone();
-    let _group = super::task_group(overrides, task, &key);
-    Ok((super::exit_code(spawn.status()?), key))
+    let capture = crate::replay::prepare(spawn.command_mut(), overrides, &key, task)?;
+    let status = if capture.is_some() {
+        crate::replay::wait(&mut spawn.spawn()?, capture)?
+    } else {
+        spawn.status()?
+    };
+    Ok((super::exit_code(status), key))
 }
 
 /// Spawn a task with piped stdout/stderr and `Stdio::null()` stdin, or name

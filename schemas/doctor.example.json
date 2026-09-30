@@ -56,7 +56,11 @@
       "summary": true,
       "fatal_errors": true,
       "tool": "normal",
-      "parallel_buffer": null
+      "parallel_buffer": null,
+      "replay": {
+        "failure": "auto",
+        "success": "off"
+      }
     },
     "pm": null,
     "runtime": null,
