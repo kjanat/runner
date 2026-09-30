@@ -9,15 +9,6 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ## [Unreleased]
 
-### Changed
-
-- Keep task stdout undecorated in GitHub Actions, including parallel tasks,
-  so pipes and command substitutions work without `-q`. Stream stderr live
-  and replay failures at invocation end: one failure is plain, multiple
-  failures get separate groups. Configure failure and successful-task replay
-  with `[output.replay]`; successful tasks are not replayed by default.
-  Actions always streams live, regardless of `[output.parallel] buffer`.
-
 ### Release checklist
 
 - [ ] Bump `Cargo.toml`; MUST run `cargo check` without `--locked` to update `Cargo.lock`.
@@ -27,6 +18,41 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 - [ ] Minor bumps: after publish, raise the `runner-run` catalog range to `^0.Y` and refresh `bun.lock`; `@latest` breaks `--frozen-lockfile`.
 - [ ] First release with `runner-run-core`, `runner-run-schemes` and `runner-run-providers`: add a `CARGO_REGISTRY_TOKEN` secret to the `crates-io` environment, release, then add a trusted publisher for each (workflow `release.yml`, environment `crates-io`) and delete the secret.
+
+## [0.27.1] - 2026-09-30
+
+### Added
+
+- Suggest corrections for mistyped commands and declared tasks before
+  attempting package or tool-manager fallbacks. Exact local matches still
+  win, and suggestions are never executed automatically. Suggest `--version`
+  for a bare `version` token when no local task matches (#163).
+
+### Changed
+
+- Keep task stdout undecorated in GitHub Actions, including parallel tasks,
+  so pipes and command substitutions work without `-q`. Stream stderr live
+  and replay failures at invocation end: one failure is plain, multiple
+  failures get separate groups. Configure failure and successful-task replay
+  with `[output.replay]`; successful tasks are not replayed by default.
+  Actions always streams live, regardless of `[output.parallel] buffer`.
+  Preserve replay text while suspending workflow-command processing so
+  annotations and other side effects do not execute twice (#168).
+- Remove `[output] groups = false` overrides that were only needed to keep
+  Actions pipes clean. The default now preserves Actions stdout and restores
+  terminal task prefixes, while enabling final failed-task replay.
+
+### Fixed
+
+- Require a project manifest before treating Yarn configuration as project
+  evidence, so a home-directory `.yarnrc` no longer selects Yarn by itself
+  (#162).
+- Resolve mise shims in `runner doctor` from the inspected project's context,
+  including custom and legacy shim directories. Distinguish inactive tools
+  from failed resolution and handle an unset home-directory environment
+  (#164).
+- Resolve the website's version from the Cargo workspace so the version label
+  and container-image tags display the version string correctly.
 
 ## [0.27.0] - 2026-09-27
 
@@ -2813,7 +2839,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - `run` alias binary for shorter invocation.
 - Unified commands for task run/list, dependency install, clean, and exec.
 
-[Unreleased]: https://github.com/kjanat/runner/compare/v0.27.0...HEAD
+[Unreleased]: https://github.com/kjanat/runner/compare/v0.27.1...HEAD
+[0.27.1]: https://github.com/kjanat/runner/compare/v0.27.0...v0.27.1
 [0.27.0]: https://github.com/kjanat/runner/compare/v0.26.2...v0.27.0
 [0.26.2]: https://github.com/kjanat/runner/compare/v0.26.1...v0.26.2
 [0.26.1]: https://github.com/kjanat/runner/compare/v0.26.0...v0.26.1

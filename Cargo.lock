@@ -463,7 +463,7 @@ checksum = "323c417e1d9665a65b263ec744ba09030cfb277e9daa0b018a4ab62e57bc8189"
 
 [[package]]
 name = "runner-run"
-version = "0.27.0"
+version = "0.27.1"
 dependencies = [
  "actions-rs",
  "anyhow",
@@ -495,7 +495,7 @@ dependencies = [
 
 [[package]]
 name = "runner-run-core"
-version = "0.27.0"
+version = "0.27.1"
 dependencies = [
  "bitflags 2.13.2",
  "json5",
@@ -507,7 +507,7 @@ dependencies = [
 
 [[package]]
 name = "runner-run-providers"
-version = "0.27.0"
+version = "0.27.1"
 dependencies = [
  "anyhow",
  "glob",
@@ -524,7 +524,7 @@ dependencies = [
 
 [[package]]
 name = "runner-run-schemes"
-version = "0.27.0"
+version = "0.27.1"
 dependencies = [
  "runner-run-core",
  "semver",
