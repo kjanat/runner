@@ -36,6 +36,21 @@ impl Project {
     }
 }
 
+/// Check the matching resume marker and return bytes printed while commands
+/// were suspended, plus anything emitted after command processing resumed.
+fn suspended_body(output: &str) -> (&str, &str) {
+    let (opening, rest) = output.split_once('\n').unwrap();
+    let token = opening.strip_prefix("::stop-commands::").unwrap();
+    assert_ne!(token, "");
+    assert_ne!(
+        token, "token",
+        "must not reuse a token from captured output"
+    );
+    let (body, tail) = rest.split_once(&format!("::{token}::\n")).unwrap();
+    assert!(body.is_empty() || body.ends_with('\n'));
+    (body, tail)
+}
+
 #[test]
 fn one_failure_replays_plain_after_live_stderr_and_keeps_stdout_exact() {
     let project = Project::new("");
@@ -48,7 +63,10 @@ fn one_failure_replays_plain_after_live_stderr_and_keeps_stdout_exact() {
     assert_eq!(output.stdout, br#"{"ok":false}"#);
     let err = String::from_utf8(output.stderr).unwrap();
     assert_eq!(err.matches("failed here").count(), 2, "{err}");
-    assert!(err.ends_with("./fail.sh — exit 7\nfailed here\n"), "{err}");
+    let start = err.find("::stop-commands::").expect(&err);
+    let (body, tail) = suspended_body(&err[start..]);
+    assert_eq!(body, "./fail.sh — exit 7\nfailed here\n");
+    assert_eq!(tail, "");
     assert!(!err.contains("::group::"), "{err}");
 }
 
@@ -70,14 +88,14 @@ fn parallel_and_sequential_failures_replay_only_after_all_live_output() {
         assert!(err.find("b error").unwrap() < first_group, "{err}");
         assert_eq!(err.matches("::group::").count(), 2, "{err}");
         assert_eq!(err.matches("::endgroup::").count(), 2, "{err}");
-        assert!(
-            err.contains("::group::./a.sh — exit 2\na error\n::endgroup::"),
-            "{err}"
-        );
-        assert!(
-            err.contains("::group::./b.sh — exit 3\nb error\n::endgroup::"),
-            "{err}"
-        );
+        for (name, code) in [("a", 2), ("b", 3)] {
+            let (_, replay) = err
+                .split_once(&format!("::group::./{name}.sh — exit {code}\n"))
+                .expect(&err);
+            let (body, tail) = suspended_body(replay);
+            assert_eq!(body, format!("{name} error\n"));
+            assert!(tail.starts_with("::endgroup::\n"), "{tail}");
+        }
     }
 }
 
@@ -163,27 +181,36 @@ fn stderr_is_live_before_the_task_can_exit_even_without_a_newline() {
 
 #[test]
 fn replayed_workflow_commands_are_inert_but_live_commands_are_preserved() {
-    let project = Project::new("[output.replay]\nfailure = 'grouped'\n");
-    project.script(
-        "commands.sh",
-        "printf '%s\\n' '::error file=x::bad' 'prefix ##[error]bad' '::group::child' \
-         '::endgroup::' '::stop-commands::token' '::token::' >&2; exit 1",
+    let payload = concat!(
+        "::error file=x::bad\nprefix ##[error]bad\n::group::child\n",
+        "::endgroup::\n::stop-commands::token\n::token::\n",
     );
-    let output = project.command(&["./commands.sh"]).output().unwrap();
-    let err = String::from_utf8(output.stderr).unwrap();
-    assert_eq!(err.matches("::error file=x::bad").count(), 1, "{err}");
-    assert_eq!(err.matches("##[error]").count(), 1, "{err}");
-    let replay = err
-        .split("::group::./commands.sh — exit 1\n")
-        .nth(1)
-        .unwrap();
-    assert!(replay.contains(": :error file=x: :bad"), "{replay}");
-    assert!(replay.contains("## [error]"), "{replay}");
-    assert_eq!(
-        replay.matches("::").count(),
-        2,
-        "only runner's endgroup: {replay}"
-    );
+    for mode in ["plain", "grouped"] {
+        let project = Project::new(&format!("[output.replay]\nfailure = '{mode}'\n"));
+        project.script(
+            "commands.sh",
+            "printf '%s\\n' '::error file=x::bad' 'prefix ##[error]bad' '::group::child' \
+             '::endgroup::' '::stop-commands::token' '::token::' >&2; exit 1",
+        );
+        let output = project.command(&["./commands.sh"]).output().unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        assert_eq!(output.stdout, b"");
+        let err = String::from_utf8(output.stderr).unwrap();
+        assert_eq!(err.matches(payload).count(), 2, "{err}");
+        let (before_live, after_live) = err.split_once(payload).expect(&err);
+        assert!(!before_live.contains("::stop-commands::"), "{err}");
+        let start = after_live.find("::stop-commands::").expect(&err);
+        let (body, tail) = suspended_body(&after_live[start..]);
+        if mode == "grouped" {
+            assert!(after_live[..start].ends_with("::group::./commands.sh — exit 1\n"));
+            assert_eq!(body, payload);
+            assert_eq!(tail, "::endgroup::\n");
+        } else {
+            assert!(!after_live[..start].contains("::group::"));
+            assert_eq!(body, format!("./commands.sh — exit 1\n{payload}"));
+            assert_eq!(tail, "");
+        }
+    }
 }
 
 #[test]
@@ -325,10 +352,12 @@ fn a_group_starts_on_a_new_line_after_unterminated_live_stderr() {
     project.script("fail.sh", "printf 'partial' >&2; exit 1");
     let output = project.command(&["./fail.sh"]).output().unwrap();
     let err = String::from_utf8(output.stderr).unwrap();
-    assert!(
-        err.contains("partial\n::group::./fail.sh — exit 1\npartial\n::endgroup::\n"),
-        "{err}"
-    );
+    let (_, replay) = err
+        .split_once("partial\n::group::./fail.sh — exit 1\n")
+        .expect(&err);
+    let (body, tail) = suspended_body(replay);
+    assert_eq!(body, "partial\n");
+    assert_eq!(tail, "::endgroup::\n");
 }
 
 #[test]

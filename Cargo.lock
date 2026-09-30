@@ -4,9 +4,9 @@ version = 4
 
 [[package]]
 name = "actions-rs"
-version = "0.1.1"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3837879a4753f13581c176a271d6d4cdca7d995c925ea1ee2ce993b9f2639c8c"
+checksum = "606ff67c977a79f3ed0c9e739cb0b1f1da264a70d08b703196483c6d5c71cfd8"
 
 [[package]]
 name = "anstream"

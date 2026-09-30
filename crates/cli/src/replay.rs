@@ -4,7 +4,7 @@
 //! nested runner's diagnostics are collected once, by its outer task.
 
 use std::fs::File;
-use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -138,64 +138,39 @@ impl Capture {
         // fresh line, and a plain failure title needs its own line too.
         writeln!(out)?;
         if grouped {
-            // Command data escaping belongs to actions-rs; preserve the title.
-            actions_rs::WorkflowCommand::new("group")
-                .message(title)
-                .issue_to(&mut *out)?;
+            actions_rs::log::group_to(title, out, |group| {
+                self.write_replay(&mut *file, None, group)
+            })
         } else {
-            // Plain text has no command envelope: keep it on one inert line.
-            inert(title.replace(['\r', '\n'], " ").as_bytes(), out)?;
+            self.write_replay(&mut *file, Some(&title), out)
         }
-        let replay = inert(&mut *file, out);
-        drop(file);
-        if self.lost.load(Ordering::SeqCst) {
-            writeln!(out, "runner: some output could not be retained for replay")?;
-        }
-        // Close even when reading the spool failed.
-        if grouped {
-            actions_rs::WorkflowCommand::new("endgroup").issue_to(&mut *out)?;
-        }
-        replay
     }
-}
 
-/// Neutralize both workflow-command syntaxes, including commands containing
-/// properties and legacy commands embedded mid-line. Bounded even for a child
-/// that writes gigabytes without a newline. Live output remains byte-for-byte.
-/// actions-rs 0.1's `stop_commands` guard writes to stdout, so it cannot protect
-/// this stderr-only replay without adding markers to the task's data stream.
-fn inert(input: impl Read, out: &mut impl Write) -> io::Result<()> {
-    let mut previous = [0; 2];
-    let mut last = None;
-    let mut reader = BufReader::new(input);
-    let mut buffered = io::BufWriter::new(out);
-    loop {
-        let chunk = match reader.fill_buf() {
-            Ok(chunk) => chunk,
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            Err(error) => return Err(error),
-        };
-        if chunk.is_empty() {
-            break;
-        }
-        let mut start = 0;
-        for (index, &byte) in chunk.iter().enumerate() {
-            if (byte == b':' && previous[1] == b':') || (byte == b'[' && previous == *b"##") {
-                buffered.write_all(&chunk[start..index])?;
-                buffered.write_all(b" ")?;
-                start = index;
+    /// Preserve replay bytes while preventing annotations and other workflow
+    /// commands from executing again. The plain title needs the same protection.
+    fn write_replay(
+        &self,
+        input: &mut impl Read,
+        title: Option<&str>,
+        out: &mut impl Write,
+    ) -> io::Result<()> {
+        let mut stopped = actions_rs::log::stop_commands_to(out)?;
+        let replay = (|| {
+            if let Some(title) = title {
+                writeln!(stopped, "{}", title.replace(['\r', '\n'], " "))?;
             }
-            previous = [previous[1], byte];
-        }
-        buffered.write_all(&chunk[start..])?;
-        last = chunk.last().copied();
-        let consumed = chunk.len();
-        reader.consume(consumed);
+            io::copy(input, &mut stopped).map(|_| ())
+        })();
+        // Resume commands even if reading the spool failed, before the enclosing
+        // group closes. Observe closing errors without masking a replay error.
+        let resumed = stopped.finish().and_then(|out| {
+            if self.lost.load(Ordering::SeqCst) {
+                writeln!(out, "runner: some output could not be retained for replay")?;
+            }
+            Ok(())
+        });
+        replay.and(resumed)
     }
-    if last.is_some_and(|byte| byte != b'\n') {
-        buffered.write_all(b"\n")?;
-    }
-    buffered.flush()
 }
 
 /// Arrange to tee the child's stderr, unless the user discarded that stream.
@@ -252,14 +227,14 @@ pub(crate) fn wait(child: &mut Child, capture: Option<Arc<Capture>>) -> io::Resu
 
 #[cfg(test)]
 mod tests {
-    use super::{Capture, inert};
+    use super::Capture;
     use crate::config::{FailureReplay, ReplayOutput};
     use std::io::{self, Read};
     use std::sync::Mutex;
     use std::sync::atomic::AtomicBool;
 
-    fn render_failure(name: &str, failure: FailureReplay) -> Vec<u8> {
-        let capture = Capture {
+    fn capture(name: &str, failure: FailureReplay) -> Capture {
+        Capture {
             name: name.to_owned(),
             policy: ReplayOutput {
                 failure,
@@ -269,11 +244,30 @@ mod tests {
             code: Mutex::new(Some(7)),
             lost: AtomicBool::new(false),
             closed: AtomicBool::new(false),
-        };
+        }
+    }
+
+    fn render_failure(name: &str, failure: FailureReplay) -> Vec<u8> {
+        let capture = capture(name, failure);
         capture.append(b"failure details\n").unwrap();
         let mut output = Vec::new();
         capture.render(1, &mut output).unwrap();
         output
+    }
+
+    fn suspended_body(output: &[u8]) -> (&[u8], &[u8]) {
+        let newline = output.iter().position(|byte| *byte == b'\n').unwrap();
+        let token = std::str::from_utf8(&output[..newline])
+            .unwrap()
+            .strip_prefix("::stop-commands::")
+            .unwrap();
+        assert_ne!(token, "");
+        let closing = format!("\n::{token}::\n");
+        let end = output
+            .windows(closing.len())
+            .position(|bytes| bytes == closing.as_bytes())
+            .unwrap();
+        (&output[newline + 1..=end], &output[end + closing.len()..])
     }
 
     #[test]
@@ -282,14 +276,11 @@ mod tests {
             "build::test %0A\r\n::error::injected\n##[error]legacy",
             FailureReplay::Grouped,
         );
-        assert_eq!(
-            output,
-            concat!(
-                "\n::group::build::test %250A%0D%0A::error::injected%0A##[error]legacy — exit 7\n",
-                "failure details\n::endgroup::\n",
-            )
-            .as_bytes(),
-        );
+        let header =
+            "\n::group::build::test %250A%0D%0A::error::injected%0A##[error]legacy — exit 7\n";
+        let (body, tail) = suspended_body(output.strip_prefix(header.as_bytes()).unwrap());
+        assert_eq!(body, b"failure details\n");
+        assert_eq!(tail, b"::endgroup::\n");
     }
 
     #[test]
@@ -298,59 +289,73 @@ mod tests {
             "build::test %0A\r\n::error::injected\n##[error]legacy",
             FailureReplay::Plain,
         );
+        let (body, tail) = suspended_body(output.strip_prefix(b"\n").unwrap());
         assert_eq!(
-            output,
+            body,
             concat!(
-                "\nbuild: :test %0A  : :error: :injected ## [error]legacy — exit 7\n",
+                "build::test %0A  ::error::injected ##[error]legacy — exit 7\n",
                 "failure details\n",
             )
             .as_bytes(),
         );
+        assert_eq!(tail, b"");
     }
 
-    /// Force a pipe-like reader to split commands at every possible offset.
-    struct Chunks<'a> {
-        bytes: &'a [u8],
-        size: usize,
-    }
-
-    impl Read for Chunks<'_> {
-        fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
-            let size = out.len().min(self.size);
-            self.bytes.read(&mut out[..size])
+    #[test]
+    fn replay_preserves_bytes_and_separates_the_resume_marker() {
+        for mode in [FailureReplay::Plain, FailureReplay::Grouped] {
+            for input in [
+                b"".as_slice(),
+                b"\n",
+                b"last line\n",
+                b"last line",
+                b"\xff",
+                b"::error file=x::bad\nprefix ##[error]bad\n::: ###[:\xff",
+            ] {
+                let capture = capture("build", mode);
+                capture.append(input).unwrap();
+                let mut output = Vec::new();
+                capture.render(1, &mut output).unwrap();
+                let (header, mut expected, tail) = if mode == FailureReplay::Grouped {
+                    (
+                        "\n::group::build — exit 7\n",
+                        Vec::new(),
+                        b"::endgroup::\n".as_slice(),
+                    )
+                } else {
+                    ("\n", "build — exit 7\n".as_bytes().to_vec(), b"".as_slice())
+                };
+                expected.extend_from_slice(input);
+                if expected.last().is_some_and(|byte| *byte != b'\n') {
+                    expected.push(b'\n');
+                }
+                let (body, rest) = suspended_body(output.strip_prefix(header.as_bytes()).unwrap());
+                assert_eq!(body, expected);
+                assert_eq!(rest, tail);
+            }
         }
     }
 
     #[test]
-    fn replay_neutralizes_commands_across_chunk_boundaries() {
-        let input = b"::error file=x::bad\nprefix ##[error]bad\n::: ###[:\xff";
-        let expected = b": :error file=x: :bad\nprefix ## [error]bad\n: : : ### [:\xff\n";
-        for size in 1..=input.len() {
-            let mut output = Vec::new();
-            inert(Chunks { bytes: input, size }, &mut output).unwrap();
-            assert_eq!(output, expected, "chunk size {size}");
-        }
-    }
+    fn a_spool_read_error_still_resumes_commands_and_closes_the_group() {
+        struct ReadError;
 
-    #[test]
-    fn replay_preserves_empty_output_and_existing_final_newlines() {
-        for (input, expected) in [
-            (b"".as_slice(), b"".as_slice()),
-            (b"\n", b"\n"),
-            (b"last line\n", b"last line\n"),
-            (b"last line", b"last line\n"),
-            (b"\xff", b"\xff\n"),
-        ] {
-            let mut output = Vec::new();
-            inert(
-                Chunks {
-                    bytes: input,
-                    size: 1,
-                },
-                &mut output,
-            )
-            .unwrap();
-            assert_eq!(output, expected);
+        impl Read for ReadError {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                Err(io::Error::other("spool read failed"))
+            }
         }
+
+        let capture = capture("build", FailureReplay::Grouped);
+        let mut input = b"partial".as_slice().chain(ReadError);
+        let mut output = Vec::new();
+        let error = actions_rs::log::group_to("build", &mut output, |group| {
+            capture.write_replay(&mut input, None, group)
+        })
+        .unwrap_err();
+        assert_eq!(error.to_string(), "spool read failed");
+        let (body, tail) = suspended_body(output.strip_prefix(b"::group::build\n").unwrap());
+        assert_eq!(body, b"partial\n");
+        assert_eq!(tail, b"::endgroup::\n");
     }
 }

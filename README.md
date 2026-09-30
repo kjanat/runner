@@ -289,9 +289,9 @@ replayed by default.
 and `"off"` override it. `success` accepts `"grouped"`, `"plain"` and `"off"`.
 These settings affect replay only, never live stderr. `[output] groups = false`
 and `-q` disable replay altogether. Explicit task stream suppression still
-applies. Replayed workflow commands are rendered as inert text, so annotations
-and other side effects are not executed twice. Outside Actions there is no
-automatic replay.
+applies. Command processing is suspended during replay, preserving the original
+text without executing annotations and other side effects twice. Outside Actions
+there is no automatic replay.
 
 ### Quiet, all the way down
 
