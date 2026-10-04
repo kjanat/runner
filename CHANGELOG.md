@@ -65,6 +65,9 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   `--version`, one row each.
 - `run --help` lists `[TASK]`, `[ARGS]`, `-s` and `-p` under Arguments and
   Options, with one blank line before the closing notes.
+- The network prompt and its refusal name what would run, such as
+  `Installing tools with mise and dependencies with bun` or
+  ``Running `npx eslint` ``. Shadowed installers are left out (#167).
 
 ## [0.27.1] - 2026-09-30
 

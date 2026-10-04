@@ -338,7 +338,7 @@ fn dispatch_by_package(
         ),
         other => refusal_error(ctx, bin, &other),
     })?;
-    crate::commands::authorize_fetch(overrides, &format!("{package} ({bin})"), "exec-package")?;
+    crate::commands::authorize_fetch(overrides, &crate::commands::running(&plan.argv))?;
     Ok(Some(spawn_plan(&ctx.root, overrides, bin, args, plan)?))
 }
 
@@ -382,7 +382,9 @@ fn dispatch_plan(
             }
         })
     };
-    let confirm = |name: &str, rung: &str| crate::commands::confirm_fetch(name, rung);
+    let confirm = |plan: &runner_core::Plan| {
+        crate::commands::confirm_fetch(&crate::commands::running(&plan.argv))
+    };
     let cascade = prepared.cascade(&dep, Some(&confirm));
     let (rung, dispatched) = super::core::dispatch_with_hints(&cascade, task_name, args, overrides)
         .map_err(|refusal| refusal_error(ctx, task_name, &refusal))?;
@@ -681,12 +683,10 @@ pub(crate) fn refusal_error(
                 rungs.join(", "),
             )
         }
-        Refusal::Declined { name, rung } => {
-            anyhow!(
-                "task {name:?} not found; downloading it via the {} rung was declined",
-                rung.name
-            )
-        }
+        Refusal::Declined { name, argv, .. } => anyhow!(
+            "task {name:?} not found. {}",
+            crate::commands::network_refused(&crate::commands::running(argv))
+        ),
         Refusal::NoCapability {
             provider,
             op,

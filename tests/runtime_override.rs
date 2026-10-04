@@ -449,11 +449,15 @@ fn runtime_selects_the_exec_fallback_primitive_once_reach_is_allowed() {
         &["--runtime", "node", "definitely-not-a-real-tool-xyz"],
         &[("RUNNER_DOWNLOAD", "false")],
     );
+    let stderr = String::from_utf8_lossy(&refused.stderr);
     assert!(
         !refused.status.success()
-            && !String::from_utf8_lossy(&refused.stderr).contains("\u{2192} npx"),
-        "the exec rung is Reach::Network and RUNNER_DOWNLOAD=false refuses it. stderr: {}",
-        String::from_utf8_lossy(&refused.stderr),
+            && !stderr.contains("\u{2192} npx")
+            && stderr.contains(
+                "task \"definitely-not-a-real-tool-xyz\" not found. Running `npx \
+                 definitely-not-a-real-tool-xyz` may access the network, which was refused"
+            ),
+        "the exec rung is Reach::Network and RUNNER_DOWNLOAD=false refuses it. stderr: {stderr}",
     );
 
     for (runtime, expected) in [("node", "npx"), ("bun", "bun x"), ("deno", "deno x")] {

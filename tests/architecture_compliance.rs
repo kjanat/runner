@@ -273,8 +273,14 @@ fn selected_package_obeys_download_and_dry_run() {
     let fixture = Fixture::new();
     fixture.program("npx");
     let output = fixture.run(&["run", "--package", "audit-missing", "audit-bin"], "false");
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("refused"));
+    assert!(
+        stderr.contains("Running `npx")
+            && stderr.contains("audit-missing")
+            && stderr.contains("may access the network, which was refused"),
+        "{stderr}"
+    );
     fixture.assert_not_executed();
     let output = fixture.run(
         &[

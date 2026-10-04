@@ -59,8 +59,8 @@ pub(crate) fn install_pms(
         InstallExecution::new(ctx, overrides, overrides.lockfile == LockfilePolicy::Frozen)?;
     report_plan(&plan, overrides);
     disclose_script_clamps(&execution, &plan.pms, overrides)?;
-    if !plan.pms.is_empty() || tools.is_some() {
-        super::authorize_fetch(overrides, "install", "install")?;
+    if let Some(action) = install_action(tools, &plan.pms) {
+        super::authorize_fetch(overrides, &action)?;
     }
 
     if let Some(runner) = tools
@@ -502,6 +502,19 @@ fn dir_winner(
         .ok_or(ResolveError::NoInstallers)
 }
 
+/// What an install with `tools` and `pms` does, for a network prompt.
+fn install_action(tools: Option<ProviderId>, pms: &[ProviderId]) -> Option<String> {
+    let tools = tools.map(|runner| format!("tools with {}", runner.label()));
+    let labels: Vec<&str> = pms.iter().map(|pm| pm.label()).collect();
+    let dependencies = match labels.as_slice() {
+        [] => None,
+        [one] => Some(format!("dependencies with {one}")),
+        [rest @ .., last] => Some(format!("dependencies with {} and {last}", rest.join(", "))),
+    };
+    let parts: Vec<String> = tools.into_iter().chain(dependencies).collect();
+    (!parts.is_empty()).then(|| format!("Installing {}", parts.join(" and ")))
+}
+
 /// Print the writers that lost a directory. A skipped install is never
 /// silent; that is how a lockfile goes stale without anyone noticing.
 fn report_plan(plan: &InstallPlan, overrides: &ResolutionOverrides) {
@@ -823,8 +836,8 @@ mod tests {
     use runner_core::{ScriptMechanism, ScriptRequest};
 
     use super::{
-        InstallExecution, InstallPlan, Shadowed, install_lanes, install_task, plan_install,
-        script_clamps, select_installers, spawn_error, tools_step,
+        InstallExecution, InstallPlan, Shadowed, install_action, install_lanes, install_task,
+        plan_install, script_clamps, select_installers, spawn_error, tools_step,
     };
     use crate::resolver::{
         OverrideOrigin, PmOverride, ResolutionOverrides, ResolveError, ScriptPolicy,
@@ -854,6 +867,38 @@ mod tests {
             pm: Some(PmOverride { pm, origin }),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn install_action_names_the_tools_and_installers() {
+        let (bun, npm, pnpm, mise) = (
+            ProviderId::Bun,
+            ProviderId::Npm,
+            ProviderId::Pnpm,
+            ProviderId::Mise,
+        );
+        for (tools, pms, action) in [
+            (None, &[bun][..], "Installing dependencies with bun"),
+            (
+                None,
+                &[bun, npm],
+                "Installing dependencies with bun and npm",
+            ),
+            (
+                None,
+                &[bun, npm, pnpm],
+                "Installing dependencies with bun, npm and pnpm",
+            ),
+            (Some(mise), &[], "Installing tools with mise"),
+            (
+                Some(mise),
+                &[bun, npm],
+                "Installing tools with mise and dependencies with bun and npm",
+            ),
+        ] {
+            assert_eq!(install_action(tools, pms).as_deref(), Some(action));
+        }
+        assert_eq!(install_action(None, &[]), None);
     }
 
     #[test]
