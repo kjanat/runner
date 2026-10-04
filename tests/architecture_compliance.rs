@@ -152,7 +152,8 @@ fn on_a_terminal_the_default_asks_unless_ci_or_github_actions_says_otherwise() {
         return;
     };
     let fixture = Fixture::new();
-    let install = |ci: Option<(&str, &str)>| {
+    fixture.program("npx");
+    let on_terminal = |args: &str, ci: Option<(&str, &str)>| {
         let _ = std::fs::remove_file(fixture.0.join("executed"));
         let mut command = support::command(script);
         command
@@ -162,10 +163,7 @@ fn on_a_terminal_the_default_asks_unless_ci_or_github_actions_says_otherwise() {
             .env("AUDIT_LOG", fixture.0.join("executed"))
             .current_dir(&fixture.0)
             .arg("-qec")
-            .arg(format!(
-                "{} install --no-tools",
-                env!("CARGO_BIN_EXE_runner")
-            ))
+            .arg(format!("{} {args}", env!("CARGO_BIN_EXE_runner")))
             .arg("/dev/null")
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -181,14 +179,18 @@ fn on_a_terminal_the_default_asks_unless_ci_or_github_actions_says_otherwise() {
             fixture.0.join("executed").exists(),
         )
     };
-    let (terminal, ran) = install(None);
+    let fetch = "run audit-missing-tool";
+    let (terminal, ran) = on_terminal(fetch, None);
     assert!(terminal.contains("[y/N]"), "{terminal}");
-    assert!(!ran, "a declined prompt must not install: {terminal}");
+    assert!(!ran, "a declined prompt must not fetch: {terminal}");
     for ci in [(CI, "true"), (GITHUB_ACTIONS, "true")] {
-        let (output, ran) = install(Some(ci));
+        let (output, ran) = on_terminal(fetch, Some(ci));
         assert!(!output.contains("[y/N]"), "{ci:?}: {output}");
-        assert!(ran, "{ci:?} installs without asking: {output}");
+        assert!(ran, "{ci:?} fetches without asking: {output}");
     }
+    let (install, ran) = on_terminal("install --no-tools", None);
+    assert!(!install.contains("[y/N]"), "{install}");
+    assert!(ran, "an install runs without asking: {install}");
 }
 
 #[test]

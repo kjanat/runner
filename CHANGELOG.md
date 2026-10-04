@@ -33,6 +33,9 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - Help and completions for `list`, `info`, `completions`, `why`, `config`,
   `schema`, `lsp` and `man` omit global flags with no effect on them. The
   flags still parse (#176).
+- `runner install` asks before it reaches the network only when
+  `--download`, `RUNNER_DOWNLOAD` or `download` in `runner.toml` sets the
+  policy. Unset, an install runs without a prompt (#167).
 - The home directory comes from the platform default everywhere:
   `USERPROFILE` on Windows, `HOME` or the account database elsewhere (#174).
 - The `runner.toml` schema sets `x-tombi-toml-version` to `v1.1.0`, so tombi

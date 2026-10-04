@@ -59,7 +59,7 @@ pub(crate) fn install_pms(
         InstallExecution::new(ctx, overrides, overrides.lockfile == LockfilePolicy::Frozen)?;
     report_plan(&plan, overrides);
     disclose_script_clamps(&execution, &plan.pms, overrides)?;
-    if let Some(action) = install_action(tools, &plan.pms) {
+    if let Some(action) = consent_action(overrides, tools, &plan.pms) {
         super::authorize_fetch(overrides, &action)?;
     }
 
@@ -502,6 +502,20 @@ fn dir_winner(
         .ok_or(ResolveError::NoInstallers)
 }
 
+/// The action an install asks consent for. Only a download setting some layer
+/// sets gates an install.
+fn consent_action(
+    overrides: &ResolutionOverrides,
+    tools: Option<ProviderId>,
+    pms: &[ProviderId],
+) -> Option<String> {
+    overrides
+        .download
+        .explicit
+        .then(|| install_action(tools, pms))
+        .flatten()
+}
+
 /// What an install with `tools` and `pms` does, for a network prompt.
 fn install_action(tools: Option<ProviderId>, pms: &[ProviderId]) -> Option<String> {
     let tools = tools.map(|runner| format!("tools with {}", runner.label()));
@@ -836,8 +850,8 @@ mod tests {
     use runner_core::{ScriptMechanism, ScriptRequest};
 
     use super::{
-        InstallExecution, InstallPlan, Shadowed, install_action, install_lanes, install_task,
-        plan_install, script_clamps, select_installers, spawn_error, tools_step,
+        InstallExecution, InstallPlan, Shadowed, consent_action, install_action, install_lanes,
+        install_task, plan_install, script_clamps, select_installers, spawn_error, tools_step,
     };
     use crate::resolver::{
         OverrideOrigin, PmOverride, ResolutionOverrides, ResolveError, ScriptPolicy,
@@ -866,6 +880,30 @@ mod tests {
         ResolutionOverrides {
             pm: Some(PmOverride { pm, origin }),
             ..Default::default()
+        }
+    }
+
+    #[test]
+    fn only_a_set_download_policy_gates_an_install() {
+        use crate::config::Download;
+        use crate::resolver::DownloadPolicy;
+
+        for (value, explicit, asks) in [
+            (Download::Ask, false, false),
+            (Download::Allow, false, false),
+            (Download::Ask, true, true),
+            (Download::Refuse, true, true),
+            (Download::Allow, true, true),
+        ] {
+            let overrides = ResolutionOverrides {
+                download: DownloadPolicy { value, explicit },
+                ..Default::default()
+            };
+            assert_eq!(
+                consent_action(&overrides, None, &[ProviderId::Bun]).is_some(),
+                asks,
+                "{value:?} explicit={explicit}"
+            );
         }
     }
 
