@@ -415,10 +415,34 @@ fn string_literal(literal: &str) -> Option<String> {
             't' => '\t',
             '"' => '"',
             '\\' => '\\',
+            'u' => unicode_escape(&mut chars)?,
             _ => return None,
         });
     }
     Some(value)
+}
+
+fn unicode_escape(chars: &mut std::str::Chars<'_>) -> Option<char> {
+    if chars.next()? != '{' {
+        return None;
+    }
+    let mut code = 0;
+    let mut digits = 0;
+    loop {
+        let c = chars.next()?;
+        if c == '}' {
+            break;
+        }
+        code = code * 16 + c.to_digit(16)?;
+        digits += 1;
+        if digits > 6 {
+            return None;
+        }
+    }
+    if digits == 0 {
+        return None;
+    }
+    char::from_u32(code)
 }
 
 /// Tasks declared by this provider in its observed scope.
@@ -502,6 +526,33 @@ mod tests {
         );
         assert_eq!(doc_attr("doc"), Some(DocAttr::Hidden));
         assert_eq!(doc_attr("docs('no')"), None);
+        for (escape, text) in [
+            (r"\u{1F680}", "🚀"),
+            (r"\u{1f680}", "🚀"),
+            (r"\u{000041}", "A"),
+        ] {
+            assert_eq!(
+                doc_attr(&format!("doc(\"x {escape} y\")")),
+                Some(DocAttr::Text(format!("x {text} y"))),
+                "{escape}"
+            );
+        }
+        for escape in [
+            r"\u{}",
+            r"\u{0000041}",
+            r"\u{D800}",
+            r"\u{110000}",
+            r"\u{zz}",
+            r"\u{+41}",
+            r"\u41",
+            r"\u{41",
+        ] {
+            assert_eq!(
+                doc_attr(&format!("doc(\"x {escape} y\")")),
+                None,
+                "{escape}"
+            );
+        }
         assert_eq!(doc_attr("group('no')"), None);
     }
 
