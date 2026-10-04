@@ -721,7 +721,7 @@ fn env_names(layers: &BTreeMap<String, BTreeMap<String, String>>) -> BTreeMap<St
 fn overrides_report(overrides: &ResolutionOverrides) -> Overrides {
     let output = overrides.output_for(None);
     Overrides {
-        dry_run: overrides.dry_run,
+        dry_run: !overrides.executes(),
         download: DownloadReport {
             value: overrides.download.value,
             explicit: overrides.download.explicit,
@@ -1564,7 +1564,7 @@ mod tests {
             "replay",
         ];
         // Resolver field name -> name it's actually reported under.
-        const RENAMED: &[(&str, &str)] = &[("quiet_level", "output")];
+        const RENAMED: &[(&str, &str)] = &[("quiet_level", "output"), ("execution", "dry_run")];
 
         // One list, two jobs: exhaustively destructure ResolutionOverrides
         // (a new field fails to compile until added here) and name the
@@ -1584,7 +1584,7 @@ mod tests {
             quiet_level,
             output,
             replay,
-            dry_run,
+            execution,
             failure_policy,
             script_policy,
             lockfile,

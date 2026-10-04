@@ -68,7 +68,7 @@ pub(crate) fn install_pms(
     {
         return Ok(code);
     }
-    if tools.is_some() && !overrides.dry_run {
+    if tools.is_some() && overrides.executes() {
         execution.project.refresh_bins(&execution.tree, &REGISTRY);
     }
     if plan.pms.is_empty() {
@@ -244,7 +244,7 @@ fn run_tool_operation(
     let plan = execution.plan(runner.label(), &[operation.to_owned()], overrides)?;
     let mut cmd = runner_core::execute::command(&plan)?;
     super::configure_task_streams(&mut cmd, overrides, "install");
-    if overrides.dry_run {
+    if !overrides.executes() {
         crate::render::explain::print_plan(overrides, &plan);
         crate::render::explain::print_command(overrides, &cmd);
         return Ok(None);
@@ -534,7 +534,7 @@ fn install_single(
     let plan = execution.plan(pm.label(), &[], overrides)?;
     let mut cmd = runner_core::execute::command(&plan)?;
     super::configure_task_streams(&mut cmd, overrides, "install");
-    if overrides.dry_run {
+    if !overrides.executes() {
         crate::render::explain::print_plan(overrides, &plan);
         crate::render::explain::print_command(overrides, &cmd);
         return Ok(0);
@@ -617,7 +617,7 @@ fn run_installs_parallel(
     plan: &InstallPlan,
     overrides: &ResolutionOverrides,
 ) -> Result<i32> {
-    if overrides.dry_run {
+    if !overrides.executes() {
         for pm in &plan.pms {
             install_single(execution, *pm, overrides)?;
         }

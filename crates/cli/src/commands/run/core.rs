@@ -308,7 +308,7 @@ pub(crate) fn prepare(
     let mut policy = policy(overrides, Some(&key));
     project.admit(&tree, &policy, &REGISTRY);
     let requested = overrides.host_verbosity_for(&key);
-    if overrides.dry_run {
+    if !overrides.executes() {
         policy.download = runner_core::Download::Allow;
     }
     Ok(Prepared {
@@ -387,6 +387,7 @@ impl Prepared {
         overrides: &ResolutionOverrides,
         token: &str,
     ) -> Result<(runner_core::Rung, runner_core::Dispatch), runner_core::Refusal> {
+        let overrides = &overrides.previewing();
         let key = task_key(ctx, &self.tree, &self.project, &self.policy, token)?;
         let mut policy = policy(overrides, Some(&key));
         policy.download = runner_core::Download::Allow;

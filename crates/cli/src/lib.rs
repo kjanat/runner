@@ -1132,7 +1132,7 @@ fn dispatch_builtin(
     out: &mut render::out::Out<'_>,
     sink: commands::WarningSink<'_>,
 ) -> Result<i32> {
-    if overrides.dry_run {
+    if !overrides.executes() {
         render::explain::print_explain(
             overrides,
             &format!(

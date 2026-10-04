@@ -315,7 +315,7 @@ impl OverridesView {
                 .runtime
                 .as_ref()
                 .map(|o| choice(o.runtime.label(), &o.origin)),
-            dry_run: overrides.dry_run,
+            dry_run: !overrides.executes(),
             warnings: overrides.shows_warnings(),
         }
     }

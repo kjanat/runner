@@ -98,7 +98,7 @@ fn print_overrides(human: &Human<'_>) {
                 );
             }
         }
-        if overrides.dry_run {
+        if !overrides.executes() {
             writeln_field(out, "dry-run", "on");
         }
     });

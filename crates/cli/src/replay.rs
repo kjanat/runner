@@ -57,7 +57,7 @@ impl Session {
     ) -> io::Result<Option<Arc<Capture>>> {
         if !crate::commands::collects_replay(overrides)
             || !overrides.emits_groups_for(key)
-            || overrides.dry_run
+            || !overrides.executes()
             || (overrides.output.replay.failure == FailureReplay::Off
                 && overrides.output.replay.success == SuccessReplay::Off)
         {

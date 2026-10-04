@@ -93,7 +93,7 @@ fn configure_plan(
     overrides: &ResolutionOverrides,
     task: &str,
 ) -> anyhow::Result<()> {
-    if !overrides.dry_run {
+    if overrides.executes() {
         link_stand_in(plan)?;
     }
     let mut metadata = Command::new("runner");
@@ -289,7 +289,7 @@ fn confirm_fetch(name: &str, rung: &str) -> bool {
 }
 
 fn authorize_fetch(overrides: &ResolutionOverrides, name: &str, rung: &str) -> anyhow::Result<()> {
-    if !overrides.dry_run
+    if overrides.executes()
         && !runner_core::reach::permitted(
             runner_core::Reach::Network,
             run::core::download(overrides),
