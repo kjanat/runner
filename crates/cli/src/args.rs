@@ -963,6 +963,19 @@ mod tests {
         }
     }
 
+    #[test]
+    fn run_help_keeps_its_own_arguments_out_of_the_version_section() {
+        let help = RunAliasCli::command().render_help().to_string();
+        let start = help.find("Version output:").expect("version section");
+        let section = help[start..].split("\n\n").next().unwrap_or_default();
+        for arg in ["[TASK]", "[ARGS]", "--sequential", "--parallel"] {
+            assert!(
+                !section.contains(arg),
+                "{arg} sits under Version output: {help}"
+            );
+        }
+    }
+
     /// Two positionals with distinct choices, plus a value-taking flag, so
     /// each completion position is distinguishable from the others.
     fn two_positional_spec() -> runner_core::UsageSpec {
@@ -2336,9 +2349,6 @@ pub(crate) struct RunAliasCli {
     #[command(flatten)]
     pub global: GlobalOpts,
 
-    #[command(flatten, next_help_heading = "Version output")]
-    pub version: VersionOpts,
-
     /// Task name or command. When omitted, prints project info.
     #[arg(add = ArgValueCandidates::new(task_candidates))]
     pub task: Option<String>,
@@ -2353,6 +2363,9 @@ pub(crate) struct RunAliasCli {
 
     #[command(flatten)]
     pub mode: ChainModeFlags,
+
+    #[command(flatten, next_help_heading = "Version output")]
+    pub version: VersionOpts,
 }
 
 /// `-s` and `-p`.
