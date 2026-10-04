@@ -425,7 +425,12 @@ fn dispatch_plan(
             &format!("{bin} from {} (local dependency)", found.display()),
         );
     }
-    let arrow_name = if rung.name == "test" { "test" } else { &ran };
+    let spelled = entry.map(|entry| ctx.spelling(entry));
+    let arrow_name = if rung.name == "test" {
+        "test"
+    } else {
+        spelled.as_deref().unwrap_or(&ran)
+    };
     print_dispatch_arrow(overrides, task_name, &label, arrow_name, args);
     let mut cmd = runner_core::execute::command(&plan)?;
     let (stdout, stderr) = overrides.task_streams_for(&task_key);
