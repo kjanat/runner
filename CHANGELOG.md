@@ -61,6 +61,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   lists split on `:` (#173).
 - When no observed provider supports an operation, runner refuses it with
   `no observed provider can <op>` (#175).
+- Help lists `-V` as an alias of `-v` and `--build-options` as an alias of
+  `--version`, one row each.
 
 ## [0.27.1] - 2026-09-30
 

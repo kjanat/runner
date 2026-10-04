@@ -952,18 +952,14 @@ mod tests {
         let help = command.render_long_help().ansi().to_string();
 
         assert!(help.contains("\x1b[1m\x1b[4m\x1b[33mVersion output:\x1b[0m"));
-        for flag in [
-            "-v",
-            "-V",
-            "--version",
-            "--build-options",
-            "--revision",
-            "--json",
-        ] {
+        for flag in ["-v", "--version", "--revision", "--json"] {
             assert!(
                 help.contains(&format!("\x1b[1m\x1b[36m{flag}\x1b[0m")),
                 "{flag} was not rendered with clap's literal style: {help:?}",
             );
+        }
+        for alias in ["[alias: -V]", "[alias: --build-options]"] {
+            assert!(help.contains(alias), "{alias} missing: {help:?}");
         }
     }
 
@@ -1900,17 +1896,18 @@ pub(crate) struct VersionOpts {
 #[group(skip)]
 pub(crate) struct ShortVersion {
     /// Print the concise version.
-    #[arg(short = 'v', group = "version-selector", conflicts_with = "json")]
-    pub lower: bool,
-
-    /// Print the concise version.
-    #[arg(short = 'V', group = "version-selector", conflicts_with = "json")]
-    pub upper: bool,
+    #[arg(
+        short = 'v',
+        visible_short_alias = 'V',
+        group = "version-selector",
+        conflicts_with = "json"
+    )]
+    pub concise: bool,
 }
 
 impl ShortVersion {
     pub(crate) const fn requested(&self) -> bool {
-        self.lower || self.upper
+        self.concise
     }
 }
 
@@ -1921,24 +1918,16 @@ pub(crate) struct DetailedVersion {
     /// Print detailed build information.
     #[arg(
         long = "version",
+        visible_alias = "build-options",
         group = "version-selector",
         group = "detailed-version"
     )]
     pub version: bool,
-
-    /// Print detailed build information (alias for `--version`).
-    #[arg(
-        long = "build-options",
-        group = "version-selector",
-        group = "detailed-version",
-        help = concat!("Print detailed build information (alias for ", cyan!("--version"), ")"),
-    )]
-    pub build_options: bool,
 }
 
 impl DetailedVersion {
     pub(crate) const fn requested(&self) -> bool {
-        self.version || self.build_options
+        self.version
     }
 }
 
