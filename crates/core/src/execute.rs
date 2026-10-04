@@ -26,11 +26,11 @@ pub fn command(plan: &Plan) -> io::Result<Command> {
     }
     if plan.trust == Trust::Project && !plan.path_prepend.is_empty() {
         let inherited = std::env::var_os("PATH").unwrap_or_default();
-        let joined = std::env::join_paths(
+        let joined = crate::path_list::join(
             plan.path_prepend
                 .iter()
                 .cloned()
-                .chain(std::env::split_paths(&inherited)),
+                .chain(crate::path_list::split(&inherited)),
         )
         .map_err(|error| {
             io::Error::new(

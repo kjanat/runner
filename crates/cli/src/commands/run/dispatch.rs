@@ -34,9 +34,9 @@ fn print_scope_explain(ctx: &ProjectContext, overrides: &ResolutionOverrides, en
         .collect();
     let scope = match (&entry.member, workspace.current.as_ref()) {
         (Some(member), Some(current)) if member.dir == current.dir => {
-            format!("{} (current member)", member.name)
+            format!("{} (current member)", member.label)
         }
-        (Some(member), _) => format!("{} (member)", member.name),
+        (Some(member), _) => format!("{} (member)", member.label),
         (None, _) => "root".to_string(),
     };
     let mut others: Vec<&str> = candidates
@@ -425,7 +425,12 @@ fn dispatch_plan(
             &format!("{bin} from {} (local dependency)", found.display()),
         );
     }
-    let arrow_name = if rung.name == "test" { "test" } else { &ran };
+    let spelled = entry.map(|entry| ctx.spelling(entry));
+    let arrow_name = if rung.name == "test" {
+        "test"
+    } else {
+        spelled.as_deref().unwrap_or(&ran)
+    };
     print_dispatch_arrow(overrides, task_name, &label, arrow_name, args);
     let mut cmd = runner_core::execute::command(&plan)?;
     let (stdout, stderr) = overrides.task_streams_for(&task_key);
@@ -700,6 +705,7 @@ pub(crate) fn refusal_error(
             dir.display(),
             patterns.join(", ")
         ),
+        Refusal::NoProvider { op } => anyhow!("no observed provider can {op} {task_name:?}"),
         Refusal::NoLockfile {
             provider,
             dir,

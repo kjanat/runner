@@ -8,6 +8,7 @@ pub mod execute;
 pub mod health;
 pub mod observe;
 pub mod op;
+pub mod path_list;
 pub mod plan;
 pub mod policy;
 pub mod probe;

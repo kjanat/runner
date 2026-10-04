@@ -21,6 +21,20 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Changed
 
+- `runner why` exits like `runner run --dry-run`. A refused, missing or
+  ambiguous plan exits non-zero, and the human report prints the refusal on
+  stderr (#170).
+- `list --json` and `doctor --json` report a task's `member` as its label,
+  which `run` accepts in `<member>:<task>`. Workspace members gain a `label`
+  field, and `workspace.current` is a label (#171).
+- A workspace member lists cargo's built-in commands and the aliases in its
+  own `.cargo/config.toml`. Aliases from an ancestor config are listed once,
+  at the root (#172).
+- Help and completions for `list`, `info`, `completions`, `why`, `config`,
+  `schema`, `lsp` and `man` omit global flags with no effect on them. The
+  flags still parse (#176).
+- The home directory comes from the platform default everywhere:
+  `USERPROFILE` on Windows, `HOME` or the account database elsewhere (#174).
 - The `runner.toml` schema sets `x-tombi-toml-version` to `v1.1.0`, so tombi
   accepts TOML 1.1 syntax in `runner.toml`. Tombi completion offers
   `$tool_name`, `$task_name` and `$var_name` as the placeholder for a new
@@ -29,6 +43,28 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   `[tools]` and `[tasks]` from broadest to narrowest. `[install]` lists
   `tools` first, the step install runs first, and a task's `output` comes
   before its `env`, as at the top level.
+
+### Fixed
+
+- `runner why` and `runner doctor` build their plans as previews. A preview
+  skips the stand-in runtime, its temporary link and `--dry-run` traces.
+- The dispatch arrow names the task without its source qualifier
+  (`→ just lint-sh`).
+- Only `~` and `~/...` expand to the current user's home. `~name/...` stays
+  as written.
+- A user cargo alias that redefines `b`, `c`, `d`, `t`, `r` or `rm` is listed
+  with its own command, as cargo runs it. runner ignores a user alias named
+  after a built-in command such as `test`, as cargo does.
+- runner reads recipe descriptions from `[doc("…")]` attributes when `just`
+  is not installed (#177).
+- runner builds for targets other than Unix and Windows. Where the standard
+  library cannot split `PATH`, runner splits it on `:` (#173).
+- When no observed provider supports an operation, runner refuses it with
+  `no observed provider can <op>` (#175).
+- Help lists `-V` as an alias of `-v` and `--build-options` as an alias of
+  `--version`, one row each.
+- `run --help` lists `[TASK]`, `[ARGS]`, `-s` and `-p` under Arguments and
+  Options, with one blank line before the closing notes.
 
 ## [0.27.1] - 2026-09-30
 

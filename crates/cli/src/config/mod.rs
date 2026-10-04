@@ -4,6 +4,8 @@ mod key;
 mod load;
 mod values;
 
-pub(crate) use key::{KeyPath, toml_key};
+pub(crate) use key::KeyPath;
+#[cfg(feature = "lsp")]
+pub(crate) use key::toml_key;
 pub(crate) use load::*;
 pub(crate) use values::boolean;

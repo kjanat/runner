@@ -32,8 +32,7 @@ pub(crate) struct ResolutionOverrides {
     pub output: Output,
     /// Shared by all tasks in this invocation, including install prerequisites.
     pub replay: std::sync::Arc<crate::replay::Session>,
-    /// `--dry-run`: print the plan instead of running it.
-    pub dry_run: bool,
+    pub execution: Execution,
     /// What a chain does after a task fails.
     pub failure_policy: FailurePolicy,
     /// Whether an install runs lifecycle scripts.
@@ -65,7 +64,7 @@ impl Default for ResolutionOverrides {
             quiet_level: QuietLevel::Off,
             output: Output::default(),
             replay: std::sync::Arc::default(),
-            dry_run: false,
+            execution: Execution::Run,
             failure_policy: FailurePolicy::default(),
             script_policy: ScriptPolicy::Default,
             lockfile: LockfilePolicy::Update,
@@ -148,7 +147,29 @@ pub(crate) struct ParentMarkers {
     pub warned: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Execution {
+    Run,
+    DryRun,
+    Preview,
+}
+
 impl ResolutionOverrides {
+    pub(crate) const fn executes(&self) -> bool {
+        matches!(self.execution, Execution::Run)
+    }
+
+    pub(crate) const fn explains(&self) -> bool {
+        matches!(self.execution, Execution::DryRun)
+    }
+
+    pub(crate) fn previewing(&self) -> Self {
+        Self {
+            execution: Execution::Preview,
+            ..self.clone()
+        }
+    }
+
     /// The output for `task`, or for the invocation as a whole with `None`.
     pub(crate) fn output_for(&self, task: Option<&str>) -> Resolved {
         let task = task.map_or_default(|key| self.task(key).output);

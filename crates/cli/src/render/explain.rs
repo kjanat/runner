@@ -6,7 +6,7 @@ use crate::resolver::ResolutionOverrides;
 
 /// Render the command that will execute, without environment values.
 pub(crate) fn print_command(overrides: &ResolutionOverrides, command: &std::process::Command) {
-    if !overrides.dry_run {
+    if !overrides.explains() {
         return;
     }
     print_explain(
@@ -29,7 +29,7 @@ pub(crate) fn print_command(overrides: &ResolutionOverrides, command: &std::proc
 }
 
 pub(crate) fn print_plan(overrides: &ResolutionOverrides, plan: &runner_core::Plan) {
-    if !overrides.dry_run {
+    if !overrides.explains() {
         return;
     }
     print_explain(
@@ -72,7 +72,7 @@ pub(crate) fn print_plan(overrides: &ResolutionOverrides, plan: &runner_core::Pl
 /// dry-run is off. An explicit `--dry-run` overrides quiet presentation so the
 /// selected policy and any host limitation remain inspectable.
 pub(crate) fn print_explain(overrides: &ResolutionOverrides, body: &str) {
-    if !overrides.dry_run {
+    if !overrides.explains() {
         return;
     }
     eprintln!("{} {} {body}", "·".dimmed(), "runner".dimmed());

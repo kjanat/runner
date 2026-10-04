@@ -247,6 +247,7 @@ fn extract_tasks_from_source(path: &Path) -> anyhow::Result<Vec<ExtractedTask>> 
     let mut aliases: Vec<ParsedAlias> = Vec::new();
     let mut saw_private_attr = false;
     let mut last_doc: Option<String> = None;
+    let mut doc_override: Option<DocAttr> = None;
     for line in content.lines() {
         if line.starts_with(' ') || line.starts_with('\t') {
             continue;
@@ -261,7 +262,11 @@ fn extract_tasks_from_source(path: &Path) -> anyhow::Result<Vec<ExtractedTask>> 
             continue;
         }
         if trimmed.starts_with('[') {
-            saw_private_attr |= is_private_attr(trimmed);
+            let attributes = attributes(trimmed);
+            saw_private_attr |= attributes.iter().any(|attr| attr.starts_with("private"));
+            if let Some(doc) = attributes.iter().find_map(|attr| doc_attr(attr)) {
+                doc_override = Some(doc);
+            }
             continue;
         }
         if let Some(rest) = trimmed.strip_prefix("alias ") {
@@ -274,10 +279,16 @@ fn extract_tasks_from_source(path: &Path) -> anyhow::Result<Vec<ExtractedTask>> 
                 });
             }
         } else if !is_top_level_directive(trimmed) {
-            try_upsert_recipe(&mut recipes, trimmed, saw_private_attr, last_doc.take());
+            let doc = match doc_override.take() {
+                Some(DocAttr::Text(text)) => Some(text),
+                Some(DocAttr::Hidden) => None,
+                None => last_doc.take(),
+            };
+            try_upsert_recipe(&mut recipes, trimmed, saw_private_attr, doc);
         }
         saw_private_attr = false;
         last_doc = None;
+        doc_override = None;
     }
 
     let mut tasks: Vec<ExtractedTask> = recipes
@@ -329,15 +340,109 @@ fn is_valid_ident(s: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
-fn is_private_attr(trimmed: &str) -> bool {
-    trimmed
+fn attributes(trimmed: &str) -> Vec<&str> {
+    let Some(inner) = trimmed
         .strip_prefix('[')
         .and_then(|rest| rest.strip_suffix(']'))
-        .is_some_and(|attr| {
-            attr.split(',')
-                .map(str::trim)
-                .any(|segment| segment.starts_with("private"))
-        })
+    else {
+        return Vec::new();
+    };
+    let mut parts = Vec::new();
+    let mut start = 0;
+    let mut quote = None;
+    let mut escaped = false;
+    for (at, c) in inner.char_indices() {
+        match quote {
+            Some('"') if escaped => escaped = false,
+            Some('"') if c == '\\' => escaped = true,
+            Some(open) if c == open => quote = None,
+            None if c == '\'' || c == '"' => quote = Some(c),
+            None if c == ',' => {
+                parts.push(inner[start..at].trim());
+                start = at + 1;
+            }
+            Some(_) | None => {}
+        }
+    }
+    parts.push(inner[start..].trim());
+    parts
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum DocAttr {
+    Text(String),
+    Hidden,
+}
+
+fn doc_attr(attribute: &str) -> Option<DocAttr> {
+    let rest = attribute.strip_prefix("doc")?.trim_start();
+    if rest.is_empty() {
+        return Some(DocAttr::Hidden);
+    }
+    let argument = match rest.strip_prefix(':') {
+        Some(argument) => argument,
+        None => rest.strip_prefix('(')?.strip_suffix(')')?,
+    };
+    string_literal(argument.trim()).map(DocAttr::Text)
+}
+
+fn string_literal(literal: &str) -> Option<String> {
+    for fence in ["'''", "\"\"\""] {
+        if let Some(body) = literal
+            .strip_prefix(fence)
+            .and_then(|rest| rest.strip_suffix(fence))
+        {
+            return Some(body.trim().to_string());
+        }
+    }
+    if let Some(raw) = literal
+        .strip_prefix('\'')
+        .and_then(|rest| rest.strip_suffix('\''))
+    {
+        return Some(raw.to_string());
+    }
+    let body = literal.strip_prefix('"')?.strip_suffix('"')?;
+    let mut value = String::with_capacity(body.len());
+    let mut chars = body.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            value.push(c);
+            continue;
+        }
+        value.push(match chars.next()? {
+            'n' => '\n',
+            'r' => '\r',
+            't' => '\t',
+            '"' => '"',
+            '\\' => '\\',
+            'u' => unicode_escape(&mut chars)?,
+            _ => return None,
+        });
+    }
+    Some(value)
+}
+
+fn unicode_escape(chars: &mut std::str::Chars<'_>) -> Option<char> {
+    if chars.next()? != '{' {
+        return None;
+    }
+    let mut code = 0;
+    let mut digits = 0;
+    loop {
+        let c = chars.next()?;
+        if c == '}' {
+            break;
+        }
+        code = code * 16 + c.to_digit(16)?;
+        digits += 1;
+        if digits > 6 {
+            return None;
+        }
+    }
+    if digits == 0 {
+        return None;
+    }
+    char::from_u32(code)
 }
 
 /// Tasks declared by this provider in its observed scope.
@@ -389,10 +494,96 @@ mod tests {
     }
 
     #[test]
-    fn private_attr_matches_comma_separated_lists() {
-        assert!(is_private_attr("[unix, private]"));
-        assert!(is_private_attr("[private(no-cd), unix]"));
-        assert!(!is_private_attr("[unix, linux]"));
+    fn attributes_split_on_commas_outside_strings() {
+        assert_eq!(attributes("[unix, private]"), ["unix", "private"]);
+        assert_eq!(
+            attributes("[private(no-cd), unix]"),
+            ["private(no-cd)", "unix"]
+        );
+        assert_eq!(
+            attributes(r#"[group("a, b"), doc('c, d'), doc("e \", f")]"#),
+            [r#"group("a, b")"#, "doc('c, d')", r#"doc("e \", f")"#]
+        );
+    }
+
+    #[test]
+    fn doc_attr_reads_every_form_just_accepts() {
+        assert_eq!(
+            doc_attr("doc('a, b')"),
+            Some(DocAttr::Text("a, b".to_string()))
+        );
+        assert_eq!(
+            doc_attr("doc: 'colon'"),
+            Some(DocAttr::Text("colon".to_string()))
+        );
+        assert_eq!(
+            doc_attr(r#"doc("dq \"x\" \\t")"#),
+            Some(DocAttr::Text(r#"dq "x" \t"#.to_string()))
+        );
+        assert_eq!(
+            doc_attr("doc('''triple''')"),
+            Some(DocAttr::Text("triple".to_string()))
+        );
+        assert_eq!(doc_attr("doc"), Some(DocAttr::Hidden));
+        assert_eq!(doc_attr("docs('no')"), None);
+        for (escape, text) in [
+            (r"\u{1F680}", "🚀"),
+            (r"\u{1f680}", "🚀"),
+            (r"\u{000041}", "A"),
+        ] {
+            assert_eq!(
+                doc_attr(&format!("doc(\"x {escape} y\")")),
+                Some(DocAttr::Text(format!("x {text} y"))),
+                "{escape}"
+            );
+        }
+        for escape in [
+            r"\u{}",
+            r"\u{0000041}",
+            r"\u{D800}",
+            r"\u{110000}",
+            r"\u{zz}",
+            r"\u{+41}",
+            r"\u41",
+            r"\u{41",
+        ] {
+            assert_eq!(
+                doc_attr(&format!("doc(\"x {escape} y\")")),
+                None,
+                "{escape}"
+            );
+        }
+        assert_eq!(doc_attr("group('no')"), None);
+    }
+
+    #[test]
+    fn fallback_parser_prefers_the_doc_attribute_over_the_comment() {
+        let dir = TempDir::new("just-fallback-doc-attr");
+        let path = dir.path().join("justfile");
+        fs::write(
+            &path,
+            "# long comment\n# second line\n[group('g'), doc('Summary, with comma')]\nbuild:\n  \
+             echo build\n\n# hidden by a bare doc\n[doc]\nquiet:\n  echo quiet\n\n# plain \
+             comment\nlint:\n  echo lint\n",
+        )
+        .expect("justfile should be written");
+
+        let tasks = extract_tasks_from_source(&path).expect("justfile source should parse");
+        let docs: Vec<(&str, Option<&str>)> = tasks
+            .iter()
+            .map(|task| match task {
+                ExtractedTask::Recipe { name, doc } => (name.as_str(), doc.as_deref()),
+                ExtractedTask::Alias { name, .. } => (name.as_str(), None),
+            })
+            .collect();
+        assert_eq!(
+            docs,
+            [
+                ("build", Some("Summary, with comma")),
+                ("lint", Some("plain comment")),
+                ("quiet", None),
+            ]
+        );
     }
 
     #[test]

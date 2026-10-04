@@ -15,7 +15,7 @@ pub fn probe_in(name: &str, path: &OsStr, pathext: Option<&OsStr>) -> Option<Pat
     if name.is_empty() || Path::new(name).components().count() > 1 {
         return None;
     }
-    probe_in_dirs(name, std::env::split_paths(path), pathext)
+    probe_in_dirs(name, crate::path_list::split(path), pathext)
 }
 
 /// Search directories without encoding them as a PATH string.
@@ -60,21 +60,19 @@ const DEFAULT_PATHEXT: &str = if cfg!(windows) {
 };
 
 fn executable(path: &Path) -> bool {
-    let Ok(metadata) = path.metadata() else {
-        return false;
-    };
-    if !metadata.is_file() {
-        return false;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        metadata.permissions().mode() & 0o111 != 0
-    }
-    #[cfg(not(unix))]
-    {
-        true
-    }
+    path.metadata()
+        .is_ok_and(|metadata| metadata.is_file() && mode_allows_execution(&metadata))
+}
+
+#[cfg(unix)]
+fn mode_allows_execution(metadata: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    metadata.permissions().mode() & 0o111 != 0
+}
+
+#[cfg(not(unix))]
+const fn mode_allows_execution(_: &std::fs::Metadata) -> bool {
+    true
 }
 
 /// `name` in `extra` first, then the process `PATH`.
@@ -83,7 +81,7 @@ pub fn probe_with(name: &str, extra: &[PathBuf]) -> Option<PathBuf> {
     let path = std::env::var_os("PATH").unwrap_or_default();
     probe_in_dirs(
         name,
-        extra.iter().cloned().chain(std::env::split_paths(&path)),
+        extra.iter().cloned().chain(crate::path_list::split(&path)),
         std::env::var_os("PATHEXT").as_deref(),
     )
 }
