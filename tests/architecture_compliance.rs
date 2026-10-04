@@ -214,6 +214,25 @@ fn explain_install_never_executes_even_with_multiple_package_managers() {
 }
 
 #[test]
+fn why_and_doctor_never_start_a_stand_in_runtime() {
+    let fixture = Fixture::new();
+    fixture.program("bun");
+    for args in [
+        vec!["--pm", "npm", "--runtime", "bun", "why", "first"],
+        vec!["--pm", "npm", "--runtime", "bun", "why", "first", "--json"],
+        vec!["--pm", "npm", "--runtime", "bun", "doctor", "--json"],
+    ] {
+        let output = fixture.run(&args, "false");
+        assert!(
+            output.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        fixture.assert_not_executed();
+    }
+}
+
+#[test]
 fn explain_never_executes_sequential_or_parallel_chains() {
     for mode in ["-s", "-p"] {
         let fixture = Fixture::new();
@@ -1022,6 +1041,7 @@ fn why_and_run_both_refuse_an_old_node_task_runtime() {
             String::from_utf8_lossy(&output.stderr)
         );
         assert!(text.contains("needs Node 22 or newer"), "{verb}: {text}");
+        assert!(!output.status.success(), "{verb}: {text}");
         assert!(!text.contains("Invalid("), "{text}");
     }
     fixture.assert_not_executed();

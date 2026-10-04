@@ -133,7 +133,11 @@ impl ResolutionOverrides {
                 replay: file.map_or_default(|file| file.output.replay),
             },
             replay: std::sync::Arc::default(),
-            dry_run: invocation.dry_run,
+            execution: if invocation.dry_run {
+                super::types::Execution::DryRun
+            } else {
+                super::types::Execution::Run
+            },
             failure_policy: invocation
                 .on_fail
                 .map(|(policy, _)| policy)

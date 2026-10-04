@@ -952,17 +952,26 @@ mod tests {
         let help = command.render_long_help().ansi().to_string();
 
         assert!(help.contains("\x1b[1m\x1b[4m\x1b[33mVersion output:\x1b[0m"));
-        for flag in [
-            "-v",
-            "-V",
-            "--version",
-            "--build-options",
-            "--revision",
-            "--json",
-        ] {
+        for flag in ["-v", "--version", "--revision", "--json"] {
             assert!(
                 help.contains(&format!("\x1b[1m\x1b[36m{flag}\x1b[0m")),
                 "{flag} was not rendered with clap's literal style: {help:?}",
+            );
+        }
+        for alias in ["[alias: -V]", "[alias: --build-options]"] {
+            assert!(help.contains(alias), "{alias} missing: {help:?}");
+        }
+    }
+
+    #[test]
+    fn run_help_keeps_its_own_arguments_out_of_the_version_section() {
+        let help = RunAliasCli::command().render_help().to_string();
+        let start = help.find("Version output:").expect("version section");
+        let section = help[start..].split("\n\n").next().unwrap_or_default();
+        for arg in ["[TASK]", "[ARGS]", "--sequential", "--parallel"] {
+            assert!(
+                !section.contains(arg),
+                "{arg} sits under Version output: {help}"
             );
         }
     }
@@ -1900,17 +1909,18 @@ pub(crate) struct VersionOpts {
 #[group(skip)]
 pub(crate) struct ShortVersion {
     /// Print the concise version.
-    #[arg(short = 'v', group = "version-selector", conflicts_with = "json")]
-    pub lower: bool,
-
-    /// Print the concise version.
-    #[arg(short = 'V', group = "version-selector", conflicts_with = "json")]
-    pub upper: bool,
+    #[arg(
+        short = 'v',
+        visible_short_alias = 'V',
+        group = "version-selector",
+        conflicts_with = "json"
+    )]
+    pub concise: bool,
 }
 
 impl ShortVersion {
     pub(crate) const fn requested(&self) -> bool {
-        self.lower || self.upper
+        self.concise
     }
 }
 
@@ -1921,24 +1931,16 @@ pub(crate) struct DetailedVersion {
     /// Print detailed build information.
     #[arg(
         long = "version",
+        visible_alias = "build-options",
         group = "version-selector",
         group = "detailed-version"
     )]
     pub version: bool,
-
-    /// Print detailed build information (alias for `--version`).
-    #[arg(
-        long = "build-options",
-        group = "version-selector",
-        group = "detailed-version",
-        help = concat!("Print detailed build information (alias for ", cyan!("--version"), ")"),
-    )]
-    pub build_options: bool,
 }
 
 impl DetailedVersion {
     pub(crate) const fn requested(&self) -> bool {
-        self.version || self.build_options
+        self.version
     }
 }
 
@@ -2335,7 +2337,7 @@ pub(crate) enum ConfigAction {
     about = "Run or exec a task via the detected package manager",
     help_template = "{about-with-newline}{before-help}{usage-heading} {usage}\n\n{all-args}{after-help}",
     after_help = concat!(
-        "\nUse a help or version flag before a task for this binary's own output.\n",
+        "Use a help or version flag before a task for this binary's own output.\n",
         "Combining a version selector with ", cyan!("-q"), "/", cyan!("--quiet"), " selects concise output.\n",
         "After a task name they are forwarded to the task instead (use ", cyan!("--"), " to force forwarding).",
     ),
@@ -2346,9 +2348,6 @@ pub(crate) enum ConfigAction {
 pub(crate) struct RunAliasCli {
     #[command(flatten)]
     pub global: GlobalOpts,
-
-    #[command(flatten, next_help_heading = "Version output")]
-    pub version: VersionOpts,
 
     /// Task name or command. When omitted, prints project info.
     #[arg(add = ArgValueCandidates::new(task_candidates))]
@@ -2364,6 +2363,9 @@ pub(crate) struct RunAliasCli {
 
     #[command(flatten)]
     pub mode: ChainModeFlags,
+
+    #[command(flatten, next_help_heading = "Version output")]
+    pub version: VersionOpts,
 }
 
 /// `-s` and `-p`.

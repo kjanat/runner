@@ -83,7 +83,7 @@ pub(crate) fn run_with_key(
             }
             dispatch::Dispatch::Spawn(spawn) => spawn,
         };
-    if overrides.dry_run {
+    if !overrides.executes() {
         crate::render::explain::print_command(overrides, spawn.command_mut());
         return Ok((0, spawn.task_key.clone()));
     }

@@ -53,7 +53,7 @@ jobs:
       - uses: jdx/mise-action@v5
         with: { mise_toml: "${{ env.MISE_TOML }}" }
       - uses: $/
-      - run: runner --pm bun install --frozen -sk fmt:check just:lint-sh cargo:lint cargo:test typecheck test:facade
+      - run: runner --pm bun install --frozen -sk fmt:check just:lint-sh cargo:lint cargo:t typecheck test:facade
 
   create-release:
     name: create draft release

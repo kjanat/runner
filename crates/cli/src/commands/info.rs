@@ -134,12 +134,12 @@ fn workspace_line(workspace: &Workspace, width: Option<usize>) -> String {
     let names: Vec<&str> = workspace
         .members
         .iter()
-        .map(|member| member.name.as_str())
+        .map(|member| member.label.as_str())
         .collect();
     let current = workspace
         .current
         .as_ref()
-        .map_or(String::new(), |member| format!(", in {}", member.name));
+        .map_or(String::new(), |member| format!(", in {}", member.label));
     let kinds = workspace_kinds(workspace);
     if names.is_empty() {
         return format!("{kinds} ({count} {noun}{current})");

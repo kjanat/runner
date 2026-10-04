@@ -28,13 +28,14 @@ type Ranked<'a> = [(&'a Task, TaskRank)];
 ///
 /// # Errors
 ///
-/// Propagates observation failures and refusals other than a miss.
+/// Propagates observation failures and, in the human report, the refusal
+/// `run` would print.
 pub(crate) fn why(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
     task: &str,
     json: bool,
-) -> Result<()> {
+) -> Result<i32> {
     let prepared = crate::commands::run::core::prepare(ctx, overrides, task)
         .map_err(|refusal| refusal_error(ctx, task, &refusal))?;
     let ranked = match crate::commands::run::core::ranked_in(
@@ -86,9 +87,21 @@ pub(crate) fn why(
     };
     let pm_decision = pm_decision_for_selected(&prepared, overrides, selected);
 
-    if !json && print_cascade_result(&outcome, task, root.is_some(), ambiguous.is_some()) {
-        return Ok(());
+    if !json {
+        match &outcome {
+            Err(Refusal::Ambiguous { .. }) if ambiguous.is_some() => {}
+            Err(refusal) => return Err(refusal_error(ctx, task, refusal)),
+            Ok((rung, dispatch)) => {
+                if rung.name != "task" && root.is_none() {
+                    print_dispatch(task, rung, dispatch);
+                    return Ok(0);
+                }
+            }
+        }
     }
+    let code = outcome.as_ref().err().map_or(0, |refusal| {
+        crate::exit_code_for_error(&refusal_error(ctx, task, refusal))
+    });
     if json {
         let decision = decision_report(&ranked, selected, verdict);
         let report = build_report(
@@ -118,7 +131,7 @@ pub(crate) fn why(
         );
     }
 
-    Ok(())
+    Ok(code)
 }
 
 /// What selection concluded besides the ranking itself.
@@ -199,40 +212,21 @@ struct WhyRuntime {
 /// Render non-task cascade outcomes, leaving task details to the report below.
 type Preview = Result<(runner_core::Rung, runner_core::Dispatch), Refusal>;
 
-fn print_cascade_result(outcome: &Preview, task: &str, root: bool, ambiguous: bool) -> bool {
-    match outcome {
-        Ok((rung, outcome)) if rung.name != "task" && !root => {
-            match outcome {
-                runner_core::Dispatch::Builtin(name) => {
-                    println!("Built-in {name} takes precedence over project tasks.");
-                }
-                runner_core::Dispatch::Plan(plan) => println!(
-                    "Resolved {task:?} at {}: {}",
-                    rung.name,
-                    plan.argv
-                        .iter()
-                        .map(|arg| arg.to_string_lossy())
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                ),
-            }
-            return true;
+fn print_dispatch(task: &str, rung: &runner_core::Rung, dispatch: &runner_core::Dispatch) {
+    match dispatch {
+        runner_core::Dispatch::Builtin(name) => {
+            println!("Built-in {name} takes precedence over project tasks.");
         }
-        Err(Refusal::Ambiguous { .. }) if ambiguous => {}
-        Err(Refusal::NotFound { tried, .. }) => {
-            println!(
-                "No plan for {task:?}; tried {}",
-                tried.iter().map(|r| r.name).collect::<Vec<_>>().join(", ")
-            );
-            return true;
-        }
-        Err(refusal) => {
-            println!("Refused {task:?}: {refusal}");
-            return true;
-        }
-        Ok(_) => {}
+        runner_core::Dispatch::Plan(plan) => println!(
+            "Resolved {task:?} at {}: {}",
+            rung.name,
+            plan.argv
+                .iter()
+                .map(|arg| arg.to_string_lossy())
+                .collect::<Vec<_>>()
+                .join(" ")
+        ),
     }
-    false
 }
 
 /// Whether the runtime `task` runs on dispatches its source itself, so
@@ -836,7 +830,7 @@ fn print_candidates(ranked: &Ranked<'_>) {
         let scope_tag = c
             .member
             .as_ref()
-            .map_or(String::new(), |member| format!(" ({})", member.name));
+            .map_or(String::new(), |member| format!(" ({})", member.label));
         println!(
             "  {} {}{} [tier={}, dispatch={}, priority={}]{}{}",
             "·".dimmed(),
@@ -987,7 +981,7 @@ mod tests {
         overrides: &ResolutionOverrides,
         task: &str,
         json: bool,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<i32> {
         super::why(ctx, overrides, task, json)
     }
 
@@ -1047,10 +1041,14 @@ mod tests {
     }
 
     #[test]
-    fn why_handles_missing_task() {
+    fn why_reports_a_missing_task_and_exits_like_run() {
         let ctx = context(vec![]);
-        why(&ctx, &ResolutionOverrides::default(), "build", true)
-            .expect("why should succeed even when task is missing");
+        let code = why(&ctx, &ResolutionOverrides::default(), "build", true)
+            .expect("the JSON report renders a missing task");
+        assert_ne!(code, 0);
+        let err = why(&ctx, &ResolutionOverrides::default(), "build", false)
+            .expect_err("the human report refuses like run");
+        assert!(format!("{err:#}").contains("not found"), "{err:#}");
     }
 
     #[test]
@@ -1059,8 +1057,14 @@ mod tests {
             task("build", ProviderId::PackageJson),
             task("build", ProviderId::Just),
         ]);
-        why(&ctx, &ResolutionOverrides::default(), "build", true).expect("json should succeed");
-        why(&ctx, &ResolutionOverrides::default(), "build", false).expect("human should succeed");
+        assert_eq!(
+            why(&ctx, &ResolutionOverrides::default(), "build", true).expect("json renders"),
+            0
+        );
+        assert_eq!(
+            why(&ctx, &ResolutionOverrides::default(), "build", false).expect("human renders"),
+            0
+        );
     }
 
     #[test]
@@ -1075,8 +1079,10 @@ mod tests {
         )
         .expect("source resolves");
 
-        why(&ctx, &overrides, "build", true)
+        let code = why(&ctx, &overrides, "build", true)
             .expect("why stops after plan and renders the refusal like any other outcome");
+        assert_ne!(code, 0);
+        why(&ctx, &overrides, "build", false).expect_err("the human report refuses like run");
     }
 
     #[test]

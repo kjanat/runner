@@ -61,7 +61,7 @@ pub(crate) fn resolve_windows(
     // names with no extension at all.
     let has_explicit_extension = Path::new(name).extension().is_some();
 
-    for dir in std::env::split_paths(path) {
+    for dir in runner_core::path_list::split(path) {
         if has_explicit_extension {
             let candidate = dir.join(name);
             if candidate.is_file() {
