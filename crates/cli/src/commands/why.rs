@@ -129,6 +129,9 @@ pub(crate) fn why(
             ctx,
             verdict,
         );
+        if let Err(refusal) = &outcome {
+            return Err(refusal_error(ctx, task, refusal));
+        }
     }
 
     Ok(code)
