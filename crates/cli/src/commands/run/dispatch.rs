@@ -409,6 +409,9 @@ fn dispatch_plan(
     crate::commands::print_core_warnings(&plan.warnings, overrides, sink);
     explain_host(overrides, &plan, project, requested, policy.verbosity);
     crate::render::explain::print_plan(overrides, &plan);
+    if plan.reach == runner_core::Reach::Network {
+        crate::commands::explain_ask(overrides);
+    }
     let ran = if rung.name == "dep" && plan.found.is_none() {
         exec_name(&plan, args).unwrap_or_else(|| task_name.to_owned())
     } else {

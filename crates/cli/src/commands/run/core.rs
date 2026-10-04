@@ -308,7 +308,7 @@ pub(crate) fn prepare(
     let mut policy = policy(overrides, Some(&key));
     project.admit(&tree, &policy, &REGISTRY);
     let requested = overrides.host_verbosity_for(&key);
-    if !overrides.executes() {
+    if !overrides.executes() && policy.download == runner_core::Download::Ask {
         policy.download = runner_core::Download::Allow;
     }
     Ok(Prepared {

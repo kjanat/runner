@@ -36,6 +36,9 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - `runner install` asks before it reaches the network only when
   `--download`, `RUNNER_DOWNLOAD` or `download` in `runner.toml` sets the
   policy. Unset, an install runs without a prompt (#167).
+- `runner why` and `--dry-run` follow the download policy. Under
+  `--no-download` they print the refusal `run` would hit and exit non-zero.
+  Under `ask` they note that a real run asks first (#178).
 - The home directory comes from the platform default everywhere:
   `USERPROFILE` on Windows, `HOME` or the account database elsewhere (#174).
 - The `runner.toml` schema sets `x-tombi-toml-version` to `v1.1.0`, so tombi

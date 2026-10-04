@@ -49,7 +49,8 @@ pub(crate) fn why(
         Err(Refusal::NoSourceTask { .. }) => Vec::new(),
         Err(refusal) => return Err(refusal_error(ctx, task, &refusal)),
     };
-    let outcome = prepared.preview(ctx, overrides, task);
+    let outcome = under_download_policy(prepared.preview(ctx, overrides, task), overrides, task);
+    let asks = asks_first(overrides, &outcome);
     let (selected, refused) = match prepared.selected(ctx, task) {
         Ok(selected) => (selected, None),
         Err(
@@ -94,6 +95,7 @@ pub(crate) fn why(
             Ok((rung, dispatch)) => {
                 if rung.name != "task" && root.is_none() {
                     print_dispatch(task, rung, dispatch);
+                    print_ask(asks);
                     return Ok(0);
                 }
             }
@@ -129,12 +131,48 @@ pub(crate) fn why(
             ctx,
             verdict,
         );
+        print_ask(asks);
         if let Err(refusal) = &outcome {
             return Err(refusal_error(ctx, task, refusal));
         }
     }
 
     Ok(code)
+}
+
+/// `outcome` under the run's download policy.
+fn under_download_policy(outcome: Preview, overrides: &ResolutionOverrides, task: &str) -> Preview {
+    match outcome {
+        Ok((rung, runner_core::Dispatch::Plan(plan)))
+            if !runner_core::reach::permitted(
+                plan.reach,
+                crate::commands::run::core::download(overrides),
+                || true,
+            ) =>
+        {
+            Err(Refusal::Declined {
+                name: task.to_owned(),
+                rung,
+                argv: plan.argv,
+            })
+        }
+        other => other,
+    }
+}
+
+/// Whether a run of the previewed plan stops to ask first.
+fn asks_first(overrides: &ResolutionOverrides, outcome: &Preview) -> bool {
+    overrides.download.value == crate::config::Download::Ask
+        && matches!(
+            outcome,
+            Ok((_, runner_core::Dispatch::Plan(plan))) if plan.reach == runner_core::Reach::Network
+        )
+}
+
+fn print_ask(asks: bool) {
+    if asks {
+        println!("A real run asks before it reaches the network.");
+    }
 }
 
 /// What selection concluded besides the ranking itself.
