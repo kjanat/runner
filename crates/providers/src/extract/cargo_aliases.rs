@@ -126,6 +126,35 @@ pub fn find_anchor(root: &Path) -> Option<PathBuf> {
     })
 }
 
+fn find_member_anchor(dir: &Path) -> Option<PathBuf> {
+    find_configs(dir)
+        .into_iter()
+        .find(|config| config.starts_with(dir))
+        .or_else(|| {
+            let cargo_toml = dir.join("Cargo.toml");
+            cargo_toml.is_file().then_some(cargo_toml)
+        })
+}
+
+fn aliases_defined_in(dir: &Path) -> anyhow::Result<HashSet<String>> {
+    let mut names = HashSet::new();
+    for config in find_configs(dir)
+        .iter()
+        .filter(|config| config.starts_with(dir))
+    {
+        let aliases =
+            read_alias_table(config).with_context(|| format!("reading {}", config.display()))?;
+        names.extend(aliases.into_keys());
+    }
+    Ok(names)
+}
+
+fn is_cargo_default(alias: &ExtractedAlias) -> bool {
+    BUILTINS.iter().any(|(short, canonical)| {
+        alias.expansion == [*canonical] && (alias.name == *short || alias.name == *canonical)
+    })
+}
+
 /// Read every config in `paths` (in cargo's discovery order: deepest first)
 /// and produce a single alias table where deeper entries win, built-in
 /// aliases fill names no user alias takes, and built-in commands stay
@@ -241,11 +270,21 @@ pub fn tasks(
     tree: &runner_core::Tree,
 ) -> Result<runner_core::Extracted, runner_core::Warning> {
     let root = runner_core::plan::scope_dir(tree, &present.scope);
-    let extracted = extract_tasks(&root)
-        .map_err(|e| runner_core::Warning::about(present.provider, format!("{e:#}")))?;
-    let anchor = find_anchor(&root);
+    let warn = |e: anyhow::Error| runner_core::Warning::about(present.provider, format!("{e:#}"));
+    let extracted = extract_tasks(&root).map_err(warn)?;
+    let (anchor, own) = match present.scope {
+        runner_core::Scope::Root => (find_anchor(&root), None),
+        runner_core::Scope::Member { .. } => (
+            find_member_anchor(&root),
+            Some(aliases_defined_in(&root).map_err(warn)?),
+        ),
+    };
     Ok(extracted
         .into_iter()
+        .filter(|entry| {
+            own.as_ref()
+                .is_none_or(|own| is_cargo_default(entry) || own.contains(&entry.name))
+        })
         .map(|entry| {
             let expansion = entry.display_command();
             let mut task = super::task(present, entry.name, None);
@@ -434,5 +473,72 @@ mod tests {
         let rendered = alias.display_command();
         let reparsed = tokenize(&AliasValue::Str(rendered.clone())).unwrap();
         assert_eq!(reparsed, alias.expansion, "rendered: {rendered}");
+    }
+
+    #[test]
+    fn a_member_lists_builtins_and_its_own_aliases_but_not_the_roots() {
+        let dir = TempDir::new("cargo-aliases-member-scope");
+        let root = dir.path();
+        let member_dir = root.join("crates").join("core");
+        fs::create_dir_all(root.join(".cargo")).unwrap();
+        fs::write(
+            root.join(".cargo").join("config.toml"),
+            "[alias]\nbb = \"build\"\nt = \"test --workspace\"\n",
+        )
+        .unwrap();
+        fs::create_dir_all(member_dir.join(".cargo")).unwrap();
+        fs::write(
+            member_dir.join("Cargo.toml"),
+            "[package]\nname = \"core\"\n",
+        )
+        .unwrap();
+        let member = runner_core::Scope::Member {
+            name: "core".into(),
+            dir: member_dir.clone(),
+        };
+        let tree = runner_core::Tree {
+            cwd: root.to_path_buf(),
+            root: root.to_path_buf(),
+            members: vec![member.clone()],
+        };
+        let present = |scope: runner_core::Scope| runner_core::Present {
+            provider: runner_core::ProviderId::Cargo,
+            scope,
+            version: None,
+            bin_dirs: vec![],
+            because: vec![],
+        };
+        let names = |scope: runner_core::Scope| -> Vec<String> {
+            tasks(&present(scope), &tree)
+                .expect("aliases read")
+                .tasks
+                .into_iter()
+                .map(|task| task.name)
+                .collect()
+        };
+
+        assert!(names(runner_core::Scope::Root).contains(&"bb".to_string()));
+        let without_own = names(member.clone());
+        assert!(!without_own.contains(&"bb".to_string()), "{without_own:?}");
+        assert!(without_own.contains(&"test".to_string()), "{without_own:?}");
+        assert!(!without_own.contains(&"t".to_string()), "{without_own:?}");
+        assert!(without_own.contains(&"b".to_string()), "{without_own:?}");
+
+        fs::write(
+            member_dir.join(".cargo").join("config.toml"),
+            "[alias]\nm = \"bb --release\"\n",
+        )
+        .unwrap();
+        let member_tasks = tasks(&present(member), &tree).expect("aliases read").tasks;
+        let own = member_tasks
+            .iter()
+            .find(|task| task.name == "m")
+            .expect("member alias listed");
+        assert_eq!(own.alias_of.as_deref(), Some("build --release"));
+        assert_eq!(
+            own.detail.source.as_deref(),
+            Some(member_dir.join(".cargo").join("config.toml").as_path())
+        );
+        assert!(!member_tasks.iter().any(|task| task.name == "bb"));
     }
 }
