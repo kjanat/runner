@@ -27,12 +27,13 @@ ls:
 
 # Shell lint at the strictest level, matching CI. -o all enables the optional
 # checks; default severity misses SC231x entirely.
+[doc('Lint shell scripts at the strictest level, matching CI')]
 [group('lint')]
 lint-sh:
     shellcheck -x -o all .github/scripts/*.sh install.sh
 
-# Regenerate the committed JSON Schemas.
 # Drift guard: just gen-schema && git diff --exit-code schemas/
+[doc('Regenerate the committed JSON Schemas')]
 [group('schema')]
 gen-schema:
     @echo "→ regenerating {{ BLUE }}{{ schema-dir }}{{ NORMAL }}"
@@ -56,6 +57,7 @@ build-packages only="" skip="false" version=`cargo metadata --no-deps --format-v
 # Build the distribution image locally. Never pushes; needs packaging/npm/dist
 # populated by `just build-packages` or a downloaded dist artifact. Defaults to
 # the host arch; passing several needs a container-driver buildx builder.
+[doc('Build the distribution image locally')]
 [group('docker')]
 docker-image version=`cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "runner-run") | .version'` platforms="":
     #!/usr/bin/env bash
