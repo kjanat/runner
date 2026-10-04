@@ -57,8 +57,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   after a built-in command such as `test`, as cargo does.
 - runner reads recipe descriptions from `[doc("…")]` attributes when `just`
   is not installed (#177).
-- runner builds for targets other than Unix and Windows. On WASI, `PATH`
-  lists split on `:` (#173).
+- runner builds for targets other than Unix and Windows. Where the standard
+  library cannot split `PATH`, runner splits it on `:` (#173).
 - When no observed provider supports an operation, runner refuses it with
   `no observed provider can <op>` (#175).
 - Help lists `-V` as an alias of `-v` and `--build-options` as an alias of

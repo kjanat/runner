@@ -5,14 +5,14 @@ use std::io;
 use std::path::PathBuf;
 
 /// The directories in `list`.
-#[cfg(not(target_os = "wasi"))]
+#[cfg(any(unix, windows, target_os = "uefi"))]
 #[must_use]
 pub fn split(list: &OsStr) -> Vec<PathBuf> {
     std::env::split_paths(list).collect()
 }
 
 /// The directories in `list`, read as UTF-8.
-#[cfg(target_os = "wasi")]
+#[cfg(not(any(unix, windows, target_os = "uefi")))]
 #[must_use]
 pub fn split(list: &OsStr) -> Vec<PathBuf> {
     list.to_string_lossy()
@@ -26,7 +26,7 @@ pub fn split(list: &OsStr) -> Vec<PathBuf> {
 /// # Errors
 ///
 /// When a directory contains the list separator.
-#[cfg(not(target_os = "wasi"))]
+#[cfg(any(unix, windows, target_os = "uefi"))]
 pub fn join(dirs: impl IntoIterator<Item = PathBuf>) -> io::Result<OsString> {
     std::env::join_paths(dirs).map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))
 }
@@ -36,7 +36,7 @@ pub fn join(dirs: impl IntoIterator<Item = PathBuf>) -> io::Result<OsString> {
 /// # Errors
 ///
 /// When a directory contains the list separator.
-#[cfg(target_os = "wasi")]
+#[cfg(not(any(unix, windows, target_os = "uefi")))]
 pub fn join(dirs: impl IntoIterator<Item = PathBuf>) -> io::Result<OsString> {
     let mut joined = OsString::new();
     for (index, dir) in dirs.into_iter().enumerate() {
