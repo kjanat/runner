@@ -224,9 +224,11 @@ pub fn run_from_env() -> Result<i32> {
     let bin = bin_name_from_arg0(&std::env::args_os().next().unwrap_or_default())
         .unwrap_or_else(|| "runner".to_string());
     clap_complete::CompleteEnv::with_factory(move || {
-        configure_cli_command(args::Cli::command(), true)
-            .name(bin.clone())
-            .bin_name(bin.clone())
+        hide_inapplicable_globals(
+            configure_cli_command(args::Cli::command(), true)
+                .name(bin.clone())
+                .bin_name(bin.clone()),
+        )
     })
     .shells(complete::SHELLS)
     .complete();
@@ -352,7 +354,7 @@ where
         command = command.name(bin_name.clone()).bin_name(bin_name);
     }
     let args = prioritize_top_level_help(args, &command);
-    command = shorten_help_subcommand(command);
+    command = shorten_help_subcommand(hide_inapplicable_globals(command));
 
     let parsed = invocation::parse::<args::Cli>(command.clone(), &args)?;
     if version_request(&parsed.cli.version, parsed.cli.global.quiet).is_some()
@@ -427,6 +429,50 @@ fn shorten_help_subcommand(mut command: clap::Command) -> clap::Command {
     } else {
         command
     }
+}
+
+const CHAIN_FLAGS: &[&str] = &["on_fail", "keep_going", "kill_on_fail"];
+const FETCH_FLAGS: &[&str] = &["download", "no_download", "package"];
+const DRY_RUN_FLAGS: &[&str] = &["dry_run"];
+const PROJECT_FLAGS: &[&str] = &["pm", "runtime", "source"];
+
+/// Must run before `Command::build`, which skips subcommands that already hold the id.
+fn hide_inapplicable_globals(mut command: clap::Command) -> clap::Command {
+    let hidden: [(&str, &[&[&str]]); 8] = [
+        ("list", &[CHAIN_FLAGS, FETCH_FLAGS]),
+        ("info", &[CHAIN_FLAGS, FETCH_FLAGS]),
+        ("completions", &[CHAIN_FLAGS, FETCH_FLAGS, PROJECT_FLAGS]),
+        ("why", &[CHAIN_FLAGS, DRY_RUN_FLAGS]),
+        (
+            "config",
+            &[CHAIN_FLAGS, FETCH_FLAGS, DRY_RUN_FLAGS, PROJECT_FLAGS],
+        ),
+        (
+            "schema",
+            &[CHAIN_FLAGS, FETCH_FLAGS, DRY_RUN_FLAGS, PROJECT_FLAGS],
+        ),
+        (
+            "lsp",
+            &[CHAIN_FLAGS, FETCH_FLAGS, DRY_RUN_FLAGS, PROJECT_FLAGS],
+        ),
+        (
+            "man",
+            &[CHAIN_FLAGS, FETCH_FLAGS, DRY_RUN_FLAGS, PROJECT_FLAGS],
+        ),
+    ];
+    for (name, groups) in hidden {
+        let copies: Vec<clap::Arg> = groups
+            .iter()
+            .copied()
+            .flatten()
+            .filter_map(|id| command.get_arguments().find(|arg| arg.get_id() == id))
+            .map(|arg| arg.clone().hide(true))
+            .collect();
+        if command.find_subcommand(name).is_some() {
+            command = command.mut_subcommand(name, |sub| sub.args(copies));
+        }
+    }
+    command
 }
 
 /// Parse process args as the `run` alias binary, detect the current dir,
@@ -1395,6 +1441,52 @@ mod tests {
         let err = anyhow::anyhow!("generic boom");
 
         assert_eq!(exit_code_for_error(&err), 1);
+    }
+
+    #[test]
+    fn read_only_subcommands_hide_the_flags_they_ignore() {
+        use clap::CommandFactory as _;
+
+        let mut command =
+            super::shorten_help_subcommand(super::hide_inapplicable_globals(args::Cli::command()));
+        let mut help = |path: &[&str]| {
+            let mut sub = &mut command;
+            for name in path {
+                sub = sub.find_subcommand_mut(name).expect("subcommand exists");
+            }
+            sub.render_long_help().to_string()
+        };
+        let list = help(&["list"]);
+        for flag in ["--on-fail", "--keep-going", "--no-download", "--package"] {
+            assert!(!list.contains(flag), "list shows {flag}: {list}");
+        }
+        assert!(
+            list.contains("--pm") && list.contains("--dry-run"),
+            "{list}"
+        );
+        let why = help(&["why"]);
+        assert!(
+            !why.contains("--on-fail") && !why.contains("--dry-run"),
+            "{why}"
+        );
+        assert!(why.contains("--no-download"), "{why}");
+        let schema = help(&["schema"]);
+        assert!(
+            !schema.contains("--pm") && !schema.contains("--dry-run"),
+            "{schema}"
+        );
+        let run = help(&["run"]);
+        for flag in [
+            "--on-fail",
+            "--dry-run",
+            "--no-download",
+            "--package",
+            "--pm",
+        ] {
+            assert!(run.contains(flag), "run hides {flag}: {run}");
+        }
+        let parsed = command.try_get_matches_from(["runner", "list", "--on-fail", "kill"]);
+        assert!(parsed.is_ok(), "hidden flags still parse: {parsed:?}");
     }
 
     #[test]
