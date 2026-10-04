@@ -2337,7 +2337,7 @@ pub(crate) enum ConfigAction {
     about = "Run or exec a task via the detected package manager",
     help_template = "{about-with-newline}{before-help}{usage-heading} {usage}\n\n{all-args}{after-help}",
     after_help = concat!(
-        "\nUse a help or version flag before a task for this binary's own output.\n",
+        "Use a help or version flag before a task for this binary's own output.\n",
         "Combining a version selector with ", cyan!("-q"), "/", cyan!("--quiet"), " selects concise output.\n",
         "After a task name they are forwarded to the task instead (use ", cyan!("--"), " to force forwarding).",
     ),

@@ -63,6 +63,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   `no observed provider can <op>` (#175).
 - Help lists `-V` as an alias of `-v` and `--build-options` as an alias of
   `--version`, one row each.
+- `run --help` lists `[TASK]`, `[ARGS]`, `-s` and `-p` under Arguments and
+  Options, with one blank line before the closing notes.
 
 ## [0.27.1] - 2026-09-30
 
