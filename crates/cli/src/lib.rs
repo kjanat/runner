@@ -1475,6 +1475,36 @@ mod tests {
             !schema.contains("--pm") && !schema.contains("--dry-run"),
             "{schema}"
         );
+        let chain_and_fetch = [
+            "--on-fail",
+            "--keep-going",
+            "--kill-on-fail",
+            "--download",
+            "--no-download",
+            "--package",
+        ];
+        let project = ["--pm", "--runtime", "--source"];
+        let every = [&chain_and_fetch[..], &project, &["--dry-run"]].concat();
+        let featured: &[&[&str]] = &[
+            #[cfg(feature = "lsp")]
+            &["lsp"],
+            #[cfg(feature = "man")]
+            &["man"],
+        ];
+        let hidden = [
+            (&["info"][..], chain_and_fetch.to_vec()),
+            (&["completions"], [&chain_and_fetch[..], &project].concat()),
+            (&["config"], every.clone()),
+            (&["config", "init"], every.clone()),
+        ]
+        .into_iter()
+        .chain(featured.iter().map(|path| (*path, every.clone())));
+        for (path, flags) in hidden {
+            let output = help(path);
+            for flag in flags {
+                assert!(!output.contains(flag), "{path:?} shows {flag}: {output}");
+            }
+        }
         let run = help(&["run"]);
         for flag in [
             "--on-fail",
