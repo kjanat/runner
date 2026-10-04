@@ -700,6 +700,7 @@ pub(crate) fn refusal_error(
             dir.display(),
             patterns.join(", ")
         ),
+        Refusal::NoProvider { op } => anyhow!("no observed provider can {op} {task_name:?}"),
         Refusal::NoLockfile {
             provider,
             dir,

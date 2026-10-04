@@ -2103,7 +2103,7 @@ fn a_chosen_package_manager_that_cannot_dispatch_the_source_is_refused() {
         &REGISTRY,
     );
     assert!(
-        !matches!(outcome, Err(Refusal::NoCapability { .. })),
+        outcome.is_ok(),
         "a source no manager dispatches ignores the choice: {outcome:?}"
     );
 }

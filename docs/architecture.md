@@ -62,9 +62,9 @@ Each article is a rule the whole tree obeys and names the test that enforces
 it.
 
 1. **Providers declare, the core decides.** A provider never reads policy. The
-   core never branches on a provider id. Enforced by a lint test that greps
-   `src/core` for `ProviderId::` in match arms and fails on any hit outside
-   the registry.
+   core never branches on a provider id. Enforced by
+   `crates/core/tests/provider_ids.rs`, which fails on any `ProviderId::`
+   path in `crates/core/src` outside a test module.
 2. **One resolver, every ecosystem, one override chain.** `resolve` takes an
    ecosystem argument. There is no second resolver. Enforced by a test that
    resolves each ecosystem through the same function with the same six
@@ -784,7 +784,7 @@ Provider {
 ```
 
 Five functions, each answering a question only mise can answer. Nothing in
-`src/core` names mise.
+`crates/core/src` names mise.
 
 ## 6. Security and variability
 
