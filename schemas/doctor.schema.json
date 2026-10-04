@@ -737,7 +737,10 @@
           "default": "off"
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "x-tombi-table-keys-order": {
+        "properties": "schema"
+      }
     },
     "ResolutionPolicy": {
       "description": "Self-description of the task-selection policy, so consumers don't\nhardcode runner's precedence rules.",

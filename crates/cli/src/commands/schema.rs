@@ -5,6 +5,7 @@ use std::io::Write as _;
 use std::path::Path;
 
 use anyhow::{Context as _, Result, bail};
+use json_schema_sort::{PropertyOrdering, SortOptions};
 use schemars::JsonSchema;
 use serde_json::Value;
 
@@ -25,7 +26,7 @@ pub(crate) fn write_schema(all: bool, output: Option<&Path>) -> Result<()> {
         let dir = output.unwrap_or_else(|| Path::new(SCHEMA_DIR));
         write_all_schemas(dir)
     } else {
-        write_json(output, &schema_json(config_schema())?)
+        write_json(output, &config_schema_json()?)
     }
 }
 
@@ -83,11 +84,14 @@ fn documents() -> Result<Vec<Document>> {
     Ok(vec![
         Document {
             filename: "runner.toml.schema.json",
-            json: schema_json(config_schema())?,
+            json: config_schema_json()?,
         },
         Document {
             filename: "doctor.schema.json",
-            json: schema_json(output_schema::<DoctorReport<'static>>()?)?,
+            json: schema_json(
+                output_schema::<DoctorReport<'static>>()?,
+                PropertyOrdering::Sorted,
+            )?,
         },
         Document {
             filename: "doctor.example.json",
@@ -96,11 +100,17 @@ fn documents() -> Result<Vec<Document>> {
         },
         Document {
             filename: "list.schema.json",
-            json: schema_json(output_schema::<TaskListView<'static>>()?)?,
+            json: schema_json(
+                output_schema::<TaskListView<'static>>()?,
+                PropertyOrdering::Sorted,
+            )?,
         },
         Document {
             filename: "why.schema.json",
-            json: schema_json(output_schema::<super::why::WhyReport<'static>>()?)?,
+            json: schema_json(
+                output_schema::<super::why::WhyReport<'static>>()?,
+                PropertyOrdering::Sorted,
+            )?,
         },
     ])
 }
@@ -113,8 +123,15 @@ fn output_schema<T: JsonSchema>() -> Result<Value> {
         .context("failed to serialize schema")
 }
 
-fn schema_json(mut schema: Value) -> Result<String> {
-    json_schema_sort::sort_schema(&mut schema);
+/// Tombi's `schema` key order follows the published property order.
+fn config_schema_json() -> Result<String> {
+    schema_json(config_schema(), PropertyOrdering::Preserve)
+}
+
+fn schema_json(mut schema: Value, properties: PropertyOrdering) -> Result<String> {
+    let mut options = SortOptions::default();
+    options.properties = properties;
+    json_schema_sort::sort_schema_with_options(&mut schema, options);
     serde_json::to_string_pretty(&schema).context("failed to serialize schema")
 }
 

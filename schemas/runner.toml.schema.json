@@ -2,190 +2,12 @@
   "$id": "https://kjanat.github.io/runner/schemas/runner.toml.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$defs": {
-    "ChainSettings": {
-      "description": "`[chain]`.",
-      "type": "object",
-      "properties": {
-        "on_fail": {
-          "description": "What happens after a task in a chain fails: `continue` starts the rest,\n`wait` starts no more and lets running tasks finish, `kill` also stops\nthe running ones.",
-          "default": "wait",
-          "anyOf": [
-            {
-              "$ref": "#/$defs/FailurePolicy"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        }
-      },
-      "additionalProperties": false
-    },
     "Download": {
       "enum": [
         true,
         false,
         "ask"
       ]
-    },
-    "FailurePolicy": {
-      "description": "What a chain does after one of its tasks fails.",
-      "oneOf": [
-        {
-          "description": "Keep starting the remaining tasks.",
-          "type": "string",
-          "const": "continue"
-        },
-        {
-          "description": "Start no more tasks and let running ones finish.",
-          "type": "string",
-          "const": "wait"
-        },
-        {
-          "description": "Start no more tasks and stop running ones.",
-          "type": "string",
-          "const": "kill"
-        }
-      ]
-    },
-    "FailureReplay": {
-      "type": "string",
-      "enum": [
-        "auto",
-        "grouped",
-        "plain",
-        "off"
-      ]
-    },
-    "InstallSettings": {
-      "description": "`[install]`.",
-      "type": "object",
-      "properties": {
-        "frozen": {
-          "description": "Install exactly what the lockfile pins, without changing it.",
-          "default": false,
-          "type": [
-            "boolean",
-            "null"
-          ]
-        },
-        "scripts": {
-          "description": "Run dependencies' lifecycle scripts. Unset leaves each package\nmanager's own default.",
-          "type": [
-            "boolean",
-            "null"
-          ]
-        },
-        "tools": {
-          "description": "Install the toolchains detected tool managers (`mise`) declare before\nthe dependencies.",
-          "default": true,
-          "type": [
-            "boolean",
-            "null"
-          ]
-        }
-      },
-      "additionalProperties": false
-    },
-    "OutputSettings": {
-      "description": "`[output]`: the task-level output settings plus the ones that apply to a\nwhole invocation.",
-      "type": "object",
-      "properties": {
-        "errors": {
-          "description": "Print runner's error messages. A failed command still fails.",
-          "default": true,
-          "type": [
-            "boolean",
-            "null"
-          ]
-        },
-        "groups": {
-          "description": "Enable the final stderr recap in GitHub Actions, and parallel task\nprefixes or block headers on a terminal outside Actions.",
-          "default": true,
-          "type": [
-            "boolean",
-            "null"
-          ]
-        },
-        "parallel": {
-          "$ref": "#/$defs/ParallelOutput",
-          "description": "Parallel chains."
-        },
-        "progress": {
-          "description": "Print the line naming the command a task runs.",
-          "default": true,
-          "type": [
-            "boolean",
-            "null"
-          ]
-        },
-        "replay": {
-          "$ref": "#/$defs/ReplayOutput",
-          "description": "Final stderr replay in GitHub Actions. Live stderr is never delayed."
-        },
-        "summary": {
-          "description": "Print a summary after a chain.",
-          "default": true,
-          "type": [
-            "boolean",
-            "null"
-          ]
-        },
-        "task": {
-          "$ref": "#/$defs/StreamOutput",
-          "description": "The task's own output."
-        },
-        "timing": {
-          "description": "Print how long a task in a chain took.",
-          "default": true,
-          "type": [
-            "boolean",
-            "null"
-          ]
-        },
-        "tool": {
-          "$ref": "#/$defs/ToolOutput",
-          "description": "The tool that runs a task."
-        },
-        "warnings": {
-          "description": "Print warnings.",
-          "default": true,
-          "type": [
-            "boolean",
-            "null"
-          ]
-        }
-      },
-      "additionalProperties": false
-    },
-    "ParallelOutput": {
-      "description": "`[output.parallel]`.",
-      "type": "object",
-      "properties": {
-        "buffer": {
-          "description": "Hold each parallel task's output and print it as one block when the\ntask ends outside Actions. Actions always streams live output and uses\n`[output.replay]` for the final stderr recap.",
-          "type": [
-            "boolean",
-            "null"
-          ]
-        }
-      },
-      "additionalProperties": false
-    },
-    "ReplayOutput": {
-      "description": "`[output.replay]`: failed tasks are plain when only one failed, grouped\notherwise. Successful tasks are not repeated unless requested.",
-      "type": "object",
-      "properties": {
-        "failure": {
-          "$ref": "#/$defs/FailureReplay",
-          "default": "auto"
-        },
-        "success": {
-          "$ref": "#/$defs/SuccessReplay",
-          "default": "off"
-        }
-      },
-      "additionalProperties": false
     },
     "RuntimeSettings": {
       "description": "`[runtime]`, shared by the project and each task.",
@@ -213,45 +35,108 @@
           ]
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "x-tombi-table-keys-order": {
+        "properties": "schema"
+      }
     },
-    "StreamOutput": {
-      "description": "`[output.task]`.",
+    "ChainSettings": {
+      "description": "`[chain]`.",
       "type": "object",
       "properties": {
-        "stderr": {
-          "description": "Show the task's stderr. `false` discards it.",
+        "on_fail": {
+          "description": "What happens after a task in a chain fails: `continue` starts the rest,\n`wait` starts no more and lets running tasks finish, `kill` also stops\nthe running ones.",
+          "default": "wait",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FailurePolicy"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "x-tombi-table-keys-order": {
+        "properties": "schema"
+      }
+    },
+    "FailurePolicy": {
+      "description": "What a chain does after one of its tasks fails.",
+      "oneOf": [
+        {
+          "description": "Keep starting the remaining tasks.",
+          "type": "string",
+          "const": "continue"
+        },
+        {
+          "description": "Start no more tasks and let running ones finish.",
+          "type": "string",
+          "const": "wait"
+        },
+        {
+          "description": "Start no more tasks and stop running ones.",
+          "type": "string",
+          "const": "kill"
+        }
+      ]
+    },
+    "InstallSettings": {
+      "description": "`[install]`.",
+      "type": "object",
+      "properties": {
+        "tools": {
+          "description": "Install the toolchains detected tool managers (`mise`) declare before\nthe dependencies.",
           "default": true,
           "type": [
             "boolean",
             "null"
           ]
         },
-        "stdout": {
-          "description": "Show the task's stdout. `false` discards it.",
-          "default": true,
+        "frozen": {
+          "description": "Install exactly what the lockfile pins, without changing it.",
+          "default": false,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "scripts": {
+          "description": "Run dependencies' lifecycle scripts. Unset leaves each package\nmanager's own default.",
           "type": [
             "boolean",
             "null"
           ]
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "x-tombi-table-keys-order": {
+        "properties": "schema"
+      }
     },
-    "SuccessReplay": {
-      "type": "string",
-      "enum": [
-        "grouped",
-        "plain",
-        "off"
-      ]
-    },
-    "TaskOutput": {
-      "description": "The output settings `[output]` and `[tasks.<name>.output]` share.",
+    "OutputSettings": {
+      "description": "`[output]`: the task-level output settings plus the ones that apply to a\nwhole invocation.",
       "type": "object",
       "properties": {
-        "groups": {
-          "description": "Enable the final stderr recap in GitHub Actions, and parallel task\nprefixes or block headers on a terminal outside Actions.",
+        "warnings": {
+          "description": "Print warnings.",
+          "default": true,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "errors": {
+          "description": "Print runner's error messages. A failed command still fails.",
+          "default": true,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "summary": {
+          "description": "Print a summary after a chain.",
           "default": true,
           "type": [
             "boolean",
@@ -266,9 +151,13 @@
             "null"
           ]
         },
-        "task": {
-          "$ref": "#/$defs/StreamOutput",
-          "description": "The task's own output."
+        "groups": {
+          "description": "Enable the final stderr recap in GitHub Actions, and parallel task\nprefixes or block headers on a terminal outside Actions.",
+          "default": true,
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "timing": {
           "description": "Print how long a task in a chain took.",
@@ -281,24 +170,171 @@
         "tool": {
           "$ref": "#/$defs/ToolOutput",
           "description": "The tool that runs a task."
+        },
+        "task": {
+          "$ref": "#/$defs/StreamOutput",
+          "description": "The task's own output."
+        },
+        "parallel": {
+          "$ref": "#/$defs/ParallelOutput",
+          "description": "Parallel chains."
+        },
+        "replay": {
+          "$ref": "#/$defs/ReplayOutput",
+          "description": "Final stderr replay in GitHub Actions. Live stderr is never delayed."
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "x-tombi-table-keys-order": {
+        "properties": "schema"
+      }
+    },
+    "ToolOutput": {
+      "description": "`[output.tool]`.",
+      "type": "object",
+      "properties": {
+        "quiet": {
+          "description": "Pass the tool its own quiet flag (`npm --silent`, `make -s`), where it\nhas one that keeps the task's output.",
+          "default": false,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "x-tombi-table-keys-order": {
+        "properties": "schema"
+      }
+    },
+    "StreamOutput": {
+      "description": "`[output.task]`.",
+      "type": "object",
+      "properties": {
+        "stdout": {
+          "description": "Show the task's stdout. `false` discards it.",
+          "default": true,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "stderr": {
+          "description": "Show the task's stderr. `false` discards it.",
+          "default": true,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "x-tombi-table-keys-order": {
+        "properties": "schema"
+      }
+    },
+    "ParallelOutput": {
+      "description": "`[output.parallel]`.",
+      "type": "object",
+      "properties": {
+        "buffer": {
+          "description": "Hold each parallel task's output and print it as one block when the\ntask ends outside Actions. Actions always streams live output and uses\n`[output.replay]` for the final stderr recap.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "x-tombi-table-keys-order": {
+        "properties": "schema"
+      }
+    },
+    "ReplayOutput": {
+      "description": "`[output.replay]`: failed tasks are plain when only one failed, grouped\notherwise. Successful tasks are not repeated unless requested.",
+      "type": "object",
+      "properties": {
+        "failure": {
+          "$ref": "#/$defs/FailureReplay",
+          "default": "auto"
+        },
+        "success": {
+          "$ref": "#/$defs/SuccessReplay",
+          "default": "off"
+        }
+      },
+      "additionalProperties": false,
+      "x-tombi-table-keys-order": {
+        "properties": "schema"
+      }
+    },
+    "FailureReplay": {
+      "type": "string",
+      "enum": [
+        "auto",
+        "grouped",
+        "plain",
+        "off"
+      ]
+    },
+    "SuccessReplay": {
+      "type": "string",
+      "enum": [
+        "grouped",
+        "plain",
+        "off"
+      ]
+    },
+    "ToolSettings": {
+      "description": "`[tools.<name>]`.",
+      "type": "object",
+      "properties": {
+        "env": {
+          "description": "Variables every invocation of this tool gets, over `[env]`.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "x-tombi-additional-key-label": "var_name"
+        }
+      },
+      "additionalProperties": false,
+      "x-tombi-table-keys-order": {
+        "properties": "schema"
+      }
     },
     "TaskSettings": {
       "description": "`[tasks.<name>]`.",
       "type": "object",
       "properties": {
-        "env": {
-          "description": "Variables this task's process gets, over `[tools.<name>.env]` and\n`[env]`.",
-          "type": "object",
-          "additionalProperties": {
-            "type": "string"
-          }
-        },
-        "output": {
-          "$ref": "#/$defs/TaskOutput",
-          "description": "This task's output, over `[output]`."
+        "source": {
+          "description": "The task source that must supply this task (`just`, `package.json`, …).",
+          "type": [
+            "null",
+            "string"
+          ],
+          "anyOf": [
+            {
+              "enum": [
+                "turbo",
+                "package.json",
+                "make",
+                "just",
+                "task",
+                "deno",
+                "cargo",
+                "go",
+                "bacon",
+                "mise",
+                "pyproject.toml",
+                null
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^(?:turbo\\.json|turbo\\.jsonc|Makefile|justfile|go-task|Taskfile|deno\\.json|deno\\.jsonc|cargo-alias|go\\.mod|bacon\\.toml|rtx|mise\\.toml|\\.mise\\.toml|pyproject)$"
+            }
+          ]
         },
         "pm": {
           "description": "The package manager that runs this task.",
@@ -334,76 +370,71 @@
           "$ref": "#/$defs/RuntimeSettings",
           "description": "The runtime this task runs on, over `[runtime]`."
         },
-        "source": {
-          "description": "The task source that must supply this task (`just`, `package.json`, …).",
-          "type": [
-            "null",
-            "string"
-          ],
-          "anyOf": [
-            {
-              "enum": [
-                "turbo",
-                "package.json",
-                "make",
-                "just",
-                "task",
-                "deno",
-                "cargo",
-                "go",
-                "bacon",
-                "mise",
-                "pyproject.toml",
-                null
-              ]
-            },
-            {
-              "type": "string",
-              "pattern": "^(?:turbo\\.json|turbo\\.jsonc|Makefile|justfile|go-task|Taskfile|deno\\.json|deno\\.jsonc|cargo-alias|go\\.mod|bacon\\.toml|rtx|mise\\.toml|\\.mise\\.toml|pyproject)$"
-            }
-          ]
+        "output": {
+          "$ref": "#/$defs/TaskOutput",
+          "description": "This task's output, over `[output]`."
+        },
+        "env": {
+          "description": "Variables this task's process gets, over `[tools.<name>.env]` and\n`[env]`.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "x-tombi-additional-key-label": "var_name"
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "x-tombi-table-keys-order": {
+        "properties": "schema"
+      }
     },
-    "ToolOutput": {
-      "description": "`[output.tool]`.",
+    "TaskOutput": {
+      "description": "The output settings `[output]` and `[tasks.<name>.output]` share.",
       "type": "object",
       "properties": {
-        "quiet": {
-          "description": "Pass the tool its own quiet flag (`npm --silent`, `make -s`), where it\nhas one that keeps the task's output.",
-          "default": false,
+        "progress": {
+          "description": "Print the line naming the command a task runs.",
+          "default": true,
           "type": [
             "boolean",
             "null"
           ]
+        },
+        "groups": {
+          "description": "Enable the final stderr recap in GitHub Actions, and parallel task\nprefixes or block headers on a terminal outside Actions.",
+          "default": true,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "timing": {
+          "description": "Print how long a task in a chain took.",
+          "default": true,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "tool": {
+          "$ref": "#/$defs/ToolOutput",
+          "description": "The tool that runs a task."
+        },
+        "task": {
+          "$ref": "#/$defs/StreamOutput",
+          "description": "The task's own output."
         }
       },
-      "additionalProperties": false
-    },
-    "ToolSettings": {
-      "description": "`[tools.<name>]`.",
-      "type": "object",
-      "properties": {
-        "env": {
-          "description": "Variables every invocation of this tool gets, over `[env]`.",
-          "type": "object",
-          "additionalProperties": {
-            "type": "string"
-          }
-        }
-      },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "x-tombi-table-keys-order": {
+        "properties": "schema"
+      }
     }
   },
   "title": "RunnerConfig",
   "description": "`runner.toml`.",
   "type": "object",
   "properties": {
-    "chain": {
-      "$ref": "#/$defs/ChainSettings",
-      "description": "How a chain of tasks reacts to a failure."
-    },
     "download": {
       "description": "Whether runner may download a package to run a command: `true`,\n`false`, or `\"ask\"` to confirm each download. Unset, runner asks on an\ninteractive terminal and downloads otherwise.",
       "anyOf": [
@@ -415,12 +446,13 @@
         }
       ]
     },
-    "env": {
-      "description": "Variables every process runner spawns gets.",
-      "type": "object",
-      "additionalProperties": {
-        "type": "string"
-      }
+    "runtime": {
+      "$ref": "#/$defs/RuntimeSettings",
+      "description": "The runtime each language's scripts and files run on."
+    },
+    "chain": {
+      "$ref": "#/$defs/ChainSettings",
+      "description": "How a chain of tasks reacts to a failure."
     },
     "install": {
       "$ref": "#/$defs/InstallSettings",
@@ -430,24 +462,34 @@
       "$ref": "#/$defs/OutputSettings",
       "description": "What runner, the tools it runs and the tasks print."
     },
-    "runtime": {
-      "$ref": "#/$defs/RuntimeSettings",
-      "description": "The runtime each language's scripts and files run on."
-    },
-    "tasks": {
-      "description": "Settings for one task, keyed by its name. `source:name`, `member:name`\nand `member:source#name` address one task among same-named ones.",
+    "env": {
+      "description": "Variables every process runner spawns gets.",
       "type": "object",
       "additionalProperties": {
-        "$ref": "#/$defs/TaskSettings"
-      }
+        "type": "string"
+      },
+      "x-tombi-additional-key-label": "var_name"
     },
     "tools": {
       "description": "Settings for one tool, keyed by its name (`mise`, `just`, …).",
       "type": "object",
       "additionalProperties": {
         "$ref": "#/$defs/ToolSettings"
-      }
+      },
+      "x-tombi-additional-key-label": "tool_name"
+    },
+    "tasks": {
+      "description": "Settings for one task, keyed by its name. `source:name`, `member:name`\nand `member:source#name` address one task among same-named ones.",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/TaskSettings"
+      },
+      "x-tombi-additional-key-label": "task_name"
     }
   },
-  "additionalProperties": false
+  "additionalProperties": false,
+  "x-tombi-toml-version": "v1.1.0",
+  "x-tombi-table-keys-order": {
+    "properties": "schema"
+  }
 }

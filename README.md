@@ -610,9 +610,9 @@ javascript = "bun"  # node | bun | deno
 on_fail = "wait"  # continue | wait | kill
 
 [install]
+tools   = true   # `mise install` first when a mise config is detected
 frozen  = false  # install exactly what the lockfile pins
 scripts = false  # dependencies' lifecycle scripts; unset keeps each manager's default
-tools   = true   # `mise install` first when a mise config is detected
 
 [output]
 warnings = true
