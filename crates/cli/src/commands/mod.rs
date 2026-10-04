@@ -273,14 +273,14 @@ fn set_task_stdio(
     });
 }
 
-/// Ask the user to allow a download. Without a terminal to ask on, the
-/// answer is no.
-fn confirm_fetch(name: &str, rung: &str) -> bool {
+/// Ask the user to allow `action` to reach the network. Without a terminal
+/// to ask on, the answer is no.
+fn confirm_fetch(action: &str) -> bool {
     use std::io::{self, IsTerminal, Write};
     if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
         return false;
     }
-    eprint!("{} may fetch via {rung}; continue? [y/N] ", name.bold());
+    eprint!("{} may access the network; continue? [y/N] ", action.bold());
     if io::stderr().flush().is_err() {
         return false;
     }
@@ -288,20 +288,30 @@ fn confirm_fetch(name: &str, rung: &str) -> bool {
     io::stdin().read_line(&mut input).is_ok() && input.trim().eq_ignore_ascii_case("y")
 }
 
-fn authorize_fetch(overrides: &ResolutionOverrides, name: &str, rung: &str) -> anyhow::Result<()> {
+fn authorize_fetch(overrides: &ResolutionOverrides, action: &str) -> anyhow::Result<()> {
     if overrides.executes()
         && !runner_core::reach::permitted(
             runner_core::Reach::Network,
             run::core::download(overrides),
-            || confirm_fetch(name, rung),
+            || confirm_fetch(action),
         )
     {
-        anyhow::bail!(
-            "{name}: downloading via {rung} was refused; allow it with --download or \
-             RUNNER_DOWNLOAD=1"
-        );
+        anyhow::bail!("{}", network_refused(action));
     }
     Ok(())
+}
+
+fn network_refused(action: &str) -> String {
+    format!(
+        "{action} may access the network, which was refused; allow it with --download or \
+         RUNNER_DOWNLOAD=1"
+    )
+}
+
+/// `argv` as the action a network prompt names.
+fn running(argv: &[OsString]) -> String {
+    let words: Vec<_> = argv.iter().map(|arg| arg.to_string_lossy()).collect();
+    format!("Running `{}`", words.join(" "))
 }
 
 pub(crate) fn exit_code(status: ExitStatus) -> i32 {

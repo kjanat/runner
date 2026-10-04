@@ -127,6 +127,24 @@ fn no_warnings_keeps_the_shadowed_installer_notice() {
 }
 
 #[test]
+fn a_refused_download_names_only_the_installer_that_would_run() {
+    let dir = colliding_project("refused", &[]);
+    let (output, log) = install_in(&dir, &[("RUNNER_DOWNLOAD", "false")]);
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(!output.status.success(), "stderr: {stderr}");
+    assert_eq!(log, "", "a refused install must not start: {log}");
+    assert!(
+        stderr.contains(
+            "Installing dependencies with bun may access the network, which was refused; allow it \
+             with --download or RUNNER_DOWNLOAD=1"
+        ),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
 fn quiet_hides_runner_install_text_but_runs_installer() {
     let dir = colliding_project("quiet", &[]);
     let (output, log) = install_in(&dir, &[("RUNNER_QUIET", "4")]);

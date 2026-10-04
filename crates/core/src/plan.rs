@@ -151,6 +151,8 @@ pub enum Refusal {
         name: String,
         /// The rung that would have fetched.
         rung: Rung,
+        /// The command that would have run.
+        argv: Vec<OsString>,
     },
     /// The provider has no capability for the op.
     NoCapability {
@@ -242,7 +244,7 @@ impl std::fmt::Display for Refusal {
                 Some(scope) => write!(f, "task {name} not found in {scope}"),
                 None => write!(f, "task {name} not found in the named source"),
             },
-            Self::Declined { name, rung } => {
+            Self::Declined { name, rung, .. } => {
                 write!(
                     f,
                     "download policy refused {name} at the {} rung",
@@ -1514,8 +1516,8 @@ pub enum DepBin {
 /// The binary an installed dependency declares.
 pub type DepFn<'a> = dyn Fn(&str) -> Result<Option<DepBin>, Refusal> + 'a;
 
-/// Asks the user whether a rung may fetch.
-pub type ConfirmFn<'a> = dyn Fn(&str, &str) -> bool + 'a;
+/// Asks the user whether a plan may fetch.
+pub type ConfirmFn<'a> = dyn Fn(&Plan) -> bool + 'a;
 
 /// Everything the cascade consults besides the token.
 pub struct Cascade<'a> {
@@ -1899,13 +1901,14 @@ fn builtin(cascade: &Cascade<'_>, token: &str) -> Option<String> {
 /// Refuse a fetching plan the policy or the user does not want.
 fn gate(cascade: &Cascade<'_>, rung: Rung, name: &str, made: &Plan) -> Result<(), Refusal> {
     if crate::reach::permitted(made.reach, cascade.policy.download, || {
-        cascade.confirm.is_none_or(|ask| ask(name, rung.name))
+        cascade.confirm.is_none_or(|ask| ask(made))
     }) {
         return Ok(());
     }
     Err(Refusal::Declined {
         name: name.to_owned(),
         rung,
+        argv: made.argv.clone(),
     })
 }
 
@@ -3967,9 +3970,9 @@ mod tests {
         assert_eq!(rung_of(&found), "exec");
         assert_eq!(argv(&found), ["npx", "runner-core-no-such-tool"]);
 
-        let asked = std::cell::Cell::new(0);
-        let refuse = |_: &str, _: &str| {
-            asked.set(asked.get() + 1);
+        let asked = std::cell::RefCell::new(Vec::new());
+        let refuse = |plan: &Plan| {
+            asked.borrow_mut().push(plan.argv.clone());
             false
         };
         let ask = Policy::default();
@@ -3977,8 +3980,11 @@ mod tests {
         with_prompt.confirm = Some(&refuse);
         let refusal = dispatch(&with_prompt, "runner-core-no-such-tool", &[])
             .expect_err("a declined prompt refuses");
-        assert!(matches!(refusal, Refusal::Declined { .. }));
-        assert_eq!(asked.get(), 1);
+        assert!(matches!(
+            refusal,
+            Refusal::Declined { ref argv, .. } if *argv == ["npx", "runner-core-no-such-tool"]
+        ));
+        assert_eq!(*asked.borrow(), [["npx", "runner-core-no-such-tool"]]);
     }
 
     #[test]
