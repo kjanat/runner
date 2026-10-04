@@ -3,9 +3,9 @@
 //!
 //! Cargo probes config files from the current directory up to the filesystem
 //! root, then `$CARGO_HOME/config.toml`, merging tables with deeper directories
-//! taking precedence. Built-in aliases (`b/c/d/t/r/rm`) cannot be redefined,
-//! so we always overwrite user attempts with cargo's defaults, same effective
-//! behavior as cargo itself.
+//! taking precedence. A user alias may redefine a built-in alias
+//! (`b/c/d/t/r/rm`), and cargo ignores a user alias named after a built-in
+//! command (`build`, `test`, ...).
 //!
 //! Each surfaced task carries the *fully-expanded* command string as its alias
 //! target: chains like `recursive_example = "rr --example recursions"` resolve
@@ -119,8 +119,8 @@ fn home_dir() -> Option<PathBuf> {
 
 /// Extract merged + recursion-expanded aliases starting at `dir`.
 ///
-/// Returns built-ins on top of user aliases, with the cargo merge rules
-/// applied (deeper > shallower > home > built-ins-can't-be-redefined).
+/// Applies cargo's merge rules: deeper > shallower > home > built-in aliases,
+/// and built-in commands are never redefined.
 pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<ExtractedAlias>> {
     let configs = find_configs(dir);
     let raw = merge_alias_tables(&configs)?;
@@ -141,8 +141,9 @@ pub fn find_anchor(root: &Path) -> Option<PathBuf> {
 }
 
 /// Read every config in `paths` (in cargo's discovery order: deepest first)
-/// and produce a single alias table where deeper entries win, then overlay
-/// built-ins last so they always trump user redefinitions (cargo's rule).
+/// and produce a single alias table where deeper entries win, built-in
+/// aliases fill names no user alias takes, and built-in commands stay
+/// themselves.
 fn merge_alias_tables(paths: &[PathBuf]) -> anyhow::Result<HashMap<String, Vec<String>>> {
     let mut merged: HashMap<String, Vec<String>> = HashMap::new();
 
@@ -162,17 +163,13 @@ fn merge_alias_tables(paths: &[PathBuf]) -> anyhow::Result<HashMap<String, Vec<S
     }
 
     for (name, expansion) in BUILTINS {
-        merged.insert((*name).to_string(), vec![(*expansion).to_string()]);
+        merged
+            .entry((*name).to_string())
+            .or_insert_with(|| vec![(*expansion).to_string()]);
     }
 
-    // Promote each built-in alias's target subcommand to a first-class
-    // task (`test`, `build`, …) so the short forms (`t`, `b`) fold under
-    // it as aliases instead of standing alone. `entry` keeps any
-    // user-defined alias of the same name intact.
     for (_, canonical) in BUILTINS {
-        merged
-            .entry((*canonical).to_string())
-            .or_insert_with(|| vec![(*canonical).to_string()]);
+        merged.insert((*canonical).to_string(), vec![(*canonical).to_string()]);
     }
 
     Ok(merged)
@@ -340,18 +337,20 @@ mod tests {
     }
 
     #[test]
-    fn merge_overlays_builtins_over_user_redefinitions() {
+    fn a_user_alias_redefines_a_builtin_alias_but_never_a_builtin_command() {
         let dir = TempDir::new("cargo-aliases-builtin-override");
         fs::create_dir_all(dir.path().join(".cargo")).unwrap();
         fs::write(
             dir.path().join(".cargo").join("config.toml"),
-            "[alias]\nb = \"check\"\n",
+            "[alias]\nb = \"check\"\ntest = \"check\"\n",
         )
         .unwrap();
 
         let merged = merge_alias_tables(&[dir.path().join(".cargo").join("config.toml")]).unwrap();
 
-        assert_eq!(merged.get("b").unwrap(), &vec!["build".to_string()]);
+        assert_eq!(merged.get("b").unwrap(), &vec!["check".to_string()]);
+        assert_eq!(merged.get("t").unwrap(), &vec!["test".to_string()]);
+        assert_eq!(merged.get("test").unwrap(), &vec!["test".to_string()]);
     }
 
     #[test]
