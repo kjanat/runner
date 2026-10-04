@@ -123,7 +123,8 @@ fn unknown_names_offer_hints_without_dispatching() {
         assert!(!stderr.contains("→"), "must not dispatch: {stderr}");
     }
     let output = run_in(&project, &["why", "biuld"]);
-    assert!(String::from_utf8_lossy(&output.stdout).contains("did you mean `build`"));
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("did you mean `build`"));
 }
 
 #[cfg(unix)]

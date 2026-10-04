@@ -1041,6 +1041,7 @@ fn why_and_run_both_refuse_an_old_node_task_runtime() {
             String::from_utf8_lossy(&output.stderr)
         );
         assert!(text.contains("needs Node 22 or newer"), "{verb}: {text}");
+        assert!(!output.status.success(), "{verb}: {text}");
         assert!(!text.contains("Invalid("), "{text}");
     }
     fixture.assert_not_executed();

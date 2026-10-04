@@ -341,7 +341,14 @@ fn doctor_from_inside_a_member_anchors_on_the_workspace_root() {
 fn why_explains_a_bare_name_two_members_define() {
     let ws = workspace("why-ambiguous");
 
-    let json = json(&runner_in(ws.path(), &["why", "site", "--json"]));
+    let output = runner_in(ws.path(), &["why", "site", "--json"]);
+    assert!(
+        !output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("--json output parses");
     assert_eq!(json["decision"]["strategy"], "ambiguous");
     assert_eq!(json["selected"], serde_json::Value::Null);
     assert_eq!(json["candidates"].as_array().map(Vec::len), Some(2));

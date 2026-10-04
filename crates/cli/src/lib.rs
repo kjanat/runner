@@ -1300,8 +1300,7 @@ fn dispatch(
         Some(args::Command::Config { action }) => commands::config(&config_dir, action),
         Some(args::Command::Why { task, json }) => {
             schema_version_for_json(json, cli.global.schema_version)?;
-            commands::why(&ctx, &overrides, &task, json)?;
-            Ok(0)
+            commands::why(&ctx, &overrides, &task, json)
         }
     };
     if let Err(error) = overrides.replay.finish()
