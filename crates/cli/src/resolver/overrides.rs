@@ -305,6 +305,7 @@ pub(crate) fn validate_config(loaded: &LoadedConfig) -> Result<()> {
 }
 
 /// Every value in a loaded `runner.toml` that names no provider of its kind.
+#[cfg(feature = "lsp")]
 pub(crate) fn config_issues(loaded: &LoadedConfig) -> Vec<DetectionWarning> {
     ResolutionOverrides::resolve_lenient(&Invocation::default(), Some(loaded)).1
 }
