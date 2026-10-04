@@ -1043,7 +1043,7 @@
       ],
       "properties": {
         "current": {
-          "description": "Name of the member the invocation directory sits in, if any.",
+          "description": "Label of the member the invocation directory sits in, if any.",
           "type": [
             "null",
             "string"
@@ -1075,12 +1075,17 @@
       "type": "object",
       "required": [
         "dir",
+        "label",
         "name",
         "path"
       ],
       "properties": {
         "dir": {
           "description": "Absolute directory.",
+          "type": "string"
+        },
+        "label": {
+          "description": "Token that addresses this member in `<label>:<task>`. The name, or the path\nwhen another member shares the name.",
           "type": "string"
         },
         "name": {

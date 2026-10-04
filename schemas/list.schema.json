@@ -39,7 +39,7 @@
           ]
         },
         "member": {
-          "description": "Workspace member the task belongs to; absent for root tasks.",
+          "description": "Label of the workspace member the task belongs to, as in `<member>:<task>`;\nabsent for root tasks.",
           "type": [
             "null",
             "string"

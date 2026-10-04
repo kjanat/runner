@@ -830,7 +830,7 @@ fn print_candidates(ranked: &Ranked<'_>) {
         let scope_tag = c
             .member
             .as_ref()
-            .map_or(String::new(), |member| format!(" ({})", member.name));
+            .map_or(String::new(), |member| format!(" ({})", member.label));
         println!(
             "  {} {}{} [tier={}, dispatch={}, priority={}]{}{}",
             "·".dimmed(),

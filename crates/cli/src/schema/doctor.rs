@@ -471,7 +471,7 @@ impl<'a> DoctorReport<'a> {
                 root: ctx.root.display().to_string(),
                 root_source: ctx.current_member().map_or_else(
                     || ctx.root.display().to_string(),
-                    |member| format!("workspace root of member {}", member.name),
+                    |member| format!("workspace root of member {}", member.label),
                 ),
                 workspace: ctx
                     .workspace

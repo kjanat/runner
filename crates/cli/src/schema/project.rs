@@ -83,7 +83,7 @@ impl<'a> Project<'a> {
             .map(|t| TaskInfo {
                 name: &t.name,
                 source: SourceLabel(t.source),
-                member: t.member.as_ref().map(|member| member.name.as_str()),
+                member: t.member.as_ref().map(|member| member.label.as_str()),
                 description: t.description.as_deref(),
                 alias_of: t.alias_of.as_deref(),
                 passthrough_to: t.passthrough_to.map(Named::label),
@@ -221,7 +221,7 @@ pub(crate) struct WorkspaceInfo<'a> {
     pub kinds: Vec<&'static str>,
     /// Members in path order.
     pub members: Vec<WorkspaceMemberInfo<'a>>,
-    /// Name of the member the invocation directory sits in, if any.
+    /// Label of the member the invocation directory sits in, if any.
     pub current: Option<&'a str>,
 }
 
@@ -232,13 +232,14 @@ impl<'a> WorkspaceInfo<'a> {
             current: workspace
                 .current
                 .as_ref()
-                .map(|member| member.name.as_str()),
+                .map(|member| member.label.as_str()),
             kinds: workspace.kinds.clone(),
             members: workspace
                 .members
                 .iter()
                 .map(|member| WorkspaceMemberInfo {
                     name: &member.name,
+                    label: &member.label,
                     path: &member.path,
                     dir: member.dir.display().to_string(),
                 })
@@ -254,6 +255,9 @@ impl<'a> WorkspaceInfo<'a> {
 pub(crate) struct WorkspaceMemberInfo<'a> {
     /// Manifest name, or the directory name when the manifest declares none.
     pub name: &'a str,
+    /// Token that addresses this member in `<label>:<task>`. The name, or the path
+    /// when another member shares the name.
+    pub label: &'a str,
     /// Directory relative to the workspace root, forward slashes.
     pub path: &'a str,
     /// Absolute directory.
@@ -395,7 +399,8 @@ pub(crate) struct TaskInfo<'a> {
     pub name: &'a str,
     /// Label of the task's source.
     pub source: SourceLabel,
-    /// Workspace member the task belongs to; absent for root tasks.
+    /// Label of the workspace member the task belongs to, as in `<member>:<task>`;
+    /// absent for root tasks.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub member: Option<&'a str>,
     /// Human-readable description, if any.

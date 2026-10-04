@@ -34,9 +34,9 @@ fn print_scope_explain(ctx: &ProjectContext, overrides: &ResolutionOverrides, en
         .collect();
     let scope = match (&entry.member, workspace.current.as_ref()) {
         (Some(member), Some(current)) if member.dir == current.dir => {
-            format!("{} (current member)", member.name)
+            format!("{} (current member)", member.label)
         }
-        (Some(member), _) => format!("{} (member)", member.name),
+        (Some(member), _) => format!("{} (member)", member.label),
         (None, _) => "root".to_string(),
     };
     let mut others: Vec<&str> = candidates
