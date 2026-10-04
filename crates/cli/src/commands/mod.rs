@@ -130,7 +130,7 @@ fn configure_plan(
             .iter()
             .filter(|_| prepend)
             .cloned()
-            .chain(std::env::split_paths(&inherited));
+            .chain(runner_core::path_list::split(&inherited));
         let pathext = std::env::var_os("PATHEXT");
         if let Some(resolved) = runner_core::probe_in_dirs(&name, dirs, pathext.as_deref()) {
             plan.argv[0] = resolved.into_os_string();
@@ -185,6 +185,8 @@ fn link_stand_in(plan: &mut runner_core::Plan) -> anyhow::Result<()> {
         #[cfg(windows)]
         let linked = std::fs::hard_link(&executable, &link)
             .or_else(|_| std::fs::copy(&executable, &link).map(drop));
+        #[cfg(not(any(unix, windows)))]
+        let linked: std::io::Result<()> = Err(std::io::ErrorKind::Unsupported.into());
         match linked {
             Err(error) if error.kind() != std::io::ErrorKind::AlreadyExists => {
                 return Err(error)
@@ -202,13 +204,13 @@ fn private_link_dir(
     name: &str,
     executable: &Path,
 ) -> anyhow::Result<std::path::PathBuf> {
-    use anyhow::Context as _;
     use std::hash::{Hash as _, Hasher as _};
 
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     executable.hash(&mut hasher);
     #[cfg(unix)]
     {
+        use anyhow::Context as _;
         use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _};
 
         let uid = rustix::process::geteuid().as_raw();
@@ -242,10 +244,17 @@ fn private_link_dir(
     }
     #[cfg(windows)]
     {
+        use anyhow::Context as _;
+
         let dir = base.join(format!("runner-{name}-{:016x}", hasher.finish()));
         std::fs::create_dir_all(&dir)
             .with_context(|| format!("cannot create {}", dir.display()))?;
         Ok(dir)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let dir = base.join(format!("runner-{name}-{:016x}", hasher.finish()));
+        anyhow::bail!("cannot create {} on this platform", dir.display())
     }
 }
 

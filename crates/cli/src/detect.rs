@@ -124,7 +124,7 @@ fn private(dir: &Path) -> bool {
 /// Whether the current user owns `dir` and only the user, or the user's own
 /// group, can write to it.
 #[cfg(not(unix))]
-fn private(_dir: &Path) -> bool {
+const fn private(_dir: &Path) -> bool {
     true
 }
 

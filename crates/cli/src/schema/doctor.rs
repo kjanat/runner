@@ -682,7 +682,8 @@ fn environment() -> Environment {
         arch: std::env::consts::ARCH,
         os: std::env::consts::OS,
         path_entries: std::env::var_os("PATH").map_or_default(|path| {
-            std::env::split_paths(&path)
+            runner_core::path_list::split(&path)
+                .iter()
                 .map(|entry| entry.display().to_string())
                 .collect()
         }),
