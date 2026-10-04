@@ -17,7 +17,7 @@ pub(crate) struct Anchored {
 
 /// Anchor `dir` in its workspace or project root.
 pub(crate) fn anchored(dir: &Path) -> Anchored {
-    anchored_below(dir, crate::home_dir().as_deref())
+    anchored_below(dir, std::env::home_dir().as_deref())
 }
 
 /// Anchor `dir` in its workspace or project root, searching no higher than

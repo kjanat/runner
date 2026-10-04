@@ -100,21 +100,7 @@ fn cargo_home() -> Option<PathBuf> {
     {
         return Some(PathBuf::from(value));
     }
-    home_dir().map(|home| home.join(".cargo"))
-}
-
-/// Best-effort home-directory resolution. We deliberately avoid the `home`
-/// or `dirs` crates since the values consulted here only feed display +
-/// dispatch, never security-sensitive paths.
-fn home_dir() -> Option<PathBuf> {
-    #[cfg(unix)]
-    let var = "HOME";
-    #[cfg(windows)]
-    let var = "USERPROFILE";
-
-    std::env::var_os(var)
-        .map(PathBuf::from)
-        .filter(|p| !p.as_os_str().is_empty())
+    std::env::home_dir().map(|home| home.join(".cargo"))
 }
 
 /// Extract merged + recursion-expanded aliases starting at `dir`.

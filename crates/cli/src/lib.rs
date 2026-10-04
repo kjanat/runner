@@ -872,7 +872,7 @@ fn osc8_link(label: &str, url: &str) -> String {
 /// common shell behaviour for the bare `~` and `~/` cases; any other form
 /// (including `~user`) is returned unchanged.
 pub(crate) fn expand_tilde(path: &Path) -> PathBuf {
-    expand_tilde_with(path, home_dir().as_deref())
+    expand_tilde_with(path, std::env::home_dir().as_deref())
 }
 
 fn expand_tilde_with(path: &Path, home: Option<&Path>) -> PathBuf {
@@ -888,13 +888,6 @@ fn expand_tilde_with(path: &Path, home: Option<&Path>) -> PathBuf {
         // Not a tilde path, or a form we don't expand (e.g. `~user`).
         Err(_) => path.to_path_buf(),
     }
-}
-
-fn home_dir() -> Option<PathBuf> {
-    let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
-    std::env::var_os(var)
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
 }
 
 fn resolve_project_dir(project_dir: Option<&Path>, cwd: &Path) -> Result<PathBuf> {
@@ -1655,8 +1648,7 @@ mod tests {
         // a bogus `<cwd>/~/foo`. The cwd exists but `<cwd>/~/foo` must not, so
         // a non-expanding implementation would fail with a path containing the
         // literal tilde segment.
-        let home_var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
-        if std::env::var_os(home_var).is_none_or(|v| v.is_empty()) {
+        if std::env::home_dir().is_none() {
             // Without a home directory there is nothing to expand to; the pure
             // `expand_tilde_with` tests cover the no-home path instead.
             return;

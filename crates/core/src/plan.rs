@@ -2329,15 +2329,14 @@ fn invocation_managers<'a>(
 /// and `.` components dropped.
 #[must_use]
 pub fn resolve_path(base: &Path, token: &str) -> PathBuf {
-    let expanded = token.strip_prefix('~').map_or_else(
-        || PathBuf::from(token),
-        |rest| {
-            home().map_or_else(
-                || PathBuf::from(token),
-                |home| home.join(rest.trim_start_matches(['/', '\\'])),
-            )
-        },
-    );
+    let expanded = token
+        .strip_prefix('~')
+        .filter(|rest| rest.is_empty() || rest.starts_with(['/', '\\']))
+        .zip(std::env::home_dir())
+        .map_or_else(
+            || PathBuf::from(token),
+            |(rest, home)| home.join(rest.trim_start_matches(['/', '\\'])),
+        );
     let joined = if expanded.is_absolute() {
         expanded
     } else {
@@ -2347,13 +2346,6 @@ pub fn resolve_path(base: &Path, token: &str) -> PathBuf {
         .components()
         .filter(|part| !matches!(part, std::path::Component::CurDir))
         .collect()
-}
-
-/// The user's home directory.
-fn home() -> Option<PathBuf> {
-    std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
 }
 
 /// Whether `token` names a path the user spelled out.
@@ -2756,7 +2748,7 @@ mod tests {
 
     use super::{
         Cascade, Dispatch, NameShape, Plan, Refusal, Shebang, Trust, Unsafe, discover, dispatch,
-        plan, read_shebang,
+        plan, read_shebang, resolve_path,
     };
     use crate::capability::{
         BinDirs, BinsCap, Capabilities, Discovery, ExecCap, QuietSupport, RunFileCap, RunTaskCap,
@@ -4288,5 +4280,16 @@ mod tests {
         let plain = dir.path().join("plain");
         fs::write(&plain, "echo hi\n").expect("script");
         assert_eq!(read_shebang(&plain), None);
+    }
+
+    #[test]
+    fn resolve_path_expands_only_the_current_users_tilde() {
+        let base = PathBuf::from("/work");
+        assert_eq!(resolve_path(&base, "~alice/bin"), base.join("~alice/bin"));
+        assert_eq!(resolve_path(&base, "./bin/tool"), base.join("bin/tool"));
+        if let Some(home) = std::env::home_dir() {
+            assert_eq!(resolve_path(&base, "~"), home);
+            assert_eq!(resolve_path(&base, "~/bin"), home.join("bin"));
+        }
     }
 }
