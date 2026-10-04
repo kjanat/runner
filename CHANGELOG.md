@@ -19,6 +19,17 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - [ ] Minor bumps: after publish, raise the `runner-run` catalog range to `^0.Y` and refresh `bun.lock`; `@latest` breaks `--frozen-lockfile`.
 - [ ] First release with `runner-run-core`, `runner-run-schemes` and `runner-run-providers`: add a `CARGO_REGISTRY_TOKEN` secret to the `crates-io` environment, release, then add a trusted publisher for each (workflow `release.yml`, environment `crates-io`) and delete the secret.
 
+### Changed
+
+- The `runner.toml` schema sets `x-tombi-toml-version` to `v1.1.0`, so tombi
+  accepts TOML 1.1 syntax in `runner.toml`. Tombi completion offers
+  `$tool_name`, `$task_name` and `$var_name` as the placeholder for a new
+  `[tools]`, `[tasks]` or `env` key. `tombi format` sorts each table into
+  the order `runner config init` writes: global settings first, then `env`,
+  `[tools]` and `[tasks]` from broadest to narrowest. `[install]` lists
+  `tools` first, the step install runs first, and a task's `output` comes
+  before its `env`, as at the top level.
+
 ## [0.27.1] - 2026-09-30
 
 ### Added

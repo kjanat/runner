@@ -82,7 +82,9 @@ pub(crate) struct LoadedConfig {
 #[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
 #[schemars(
     deny_unknown_fields,
-    extend("$id" = crate::schema::config_schema_url())
+    extend("$id" = crate::schema::config_schema_url()),
+    extend("x-tombi-toml-version" = "v1.1.0"),
+    extend("x-tombi-table-keys-order" = { "properties": "schema" })
 )]
 pub(crate) struct RunnerConfig {
     /// Whether runner may download a package to run a command: `true`,
@@ -104,19 +106,22 @@ pub(crate) struct RunnerConfig {
     pub output: OutputSettings,
     /// Variables every process runner spawns gets.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[schemars(extend("x-tombi-additional-key-label" = "var_name"))]
     pub env: BTreeMap<String, String>,
     /// Settings for one tool, keyed by its name (`mise`, `just`, …).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[schemars(extend("x-tombi-additional-key-label" = "tool_name"))]
     pub tools: BTreeMap<String, ToolSettings>,
     /// Settings for one task, keyed by its name. `source:name`, `member:name`
     /// and `member:source#name` address one task among same-named ones.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[schemars(extend("x-tombi-additional-key-label" = "task_name"))]
     pub tasks: BTreeMap<String, TaskSettings>,
 }
 
 /// `[runtime]`, shared by the project and each task.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
-#[schemars(deny_unknown_fields)]
+#[schemars(deny_unknown_fields, extend("x-tombi-table-keys-order" = { "properties": "schema" }))]
 pub(crate) struct RuntimeSettings {
     /// The runtime JavaScript and TypeScript run on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -132,7 +137,7 @@ impl RuntimeSettings {
 
 /// `[chain]`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
-#[schemars(deny_unknown_fields)]
+#[schemars(deny_unknown_fields, extend("x-tombi-table-keys-order" = { "properties": "schema" }))]
 pub(crate) struct ChainSettings {
     /// What happens after a task in a chain fails: `continue` starts the rest,
     /// `wait` starts no more and lets running tasks finish, `kill` also stops
@@ -150,8 +155,13 @@ impl ChainSettings {
 
 /// `[install]`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
-#[schemars(deny_unknown_fields)]
+#[schemars(deny_unknown_fields, extend("x-tombi-table-keys-order" = { "properties": "schema" }))]
 pub(crate) struct InstallSettings {
+    /// Install the toolchains detected tool managers (`mise`) declare before
+    /// the dependencies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("default" = true))]
+    pub tools: Option<bool>,
     /// Install exactly what the lockfile pins, without changing it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(extend("default" = false))]
@@ -160,11 +170,6 @@ pub(crate) struct InstallSettings {
     /// manager's own default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scripts: Option<bool>,
-    /// Install the toolchains detected tool managers (`mise`) declare before
-    /// the dependencies.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(extend("default" = true))]
-    pub tools: Option<bool>,
 }
 
 impl InstallSettings {
@@ -176,7 +181,7 @@ impl InstallSettings {
 /// `[output]`: the task-level output settings plus the ones that apply to a
 /// whole invocation.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
-#[schemars(deny_unknown_fields)]
+#[schemars(deny_unknown_fields, extend("x-tombi-table-keys-order" = { "properties": "schema" }))]
 pub(crate) struct OutputSettings {
     /// Print warnings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -206,7 +211,7 @@ pub(crate) struct OutputSettings {
 #[derive(
     Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema,
 )]
-#[schemars(deny_unknown_fields)]
+#[schemars(deny_unknown_fields, extend("x-tombi-table-keys-order" = { "properties": "schema" }))]
 pub(crate) struct ReplayOutput {
     #[serde(default)]
     pub failure: FailureReplay,
@@ -253,7 +258,7 @@ impl OutputSettings {
 
 /// `[output.parallel]`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
-#[schemars(deny_unknown_fields)]
+#[schemars(deny_unknown_fields, extend("x-tombi-table-keys-order" = { "properties": "schema" }))]
 pub(crate) struct ParallelOutput {
     /// Hold each parallel task's output and print it as one block when the
     /// task ends outside Actions. Actions always streams live output and uses
@@ -270,7 +275,7 @@ impl ParallelOutput {
 
 /// The output settings `[output]` and `[tasks.<name>.output]` share.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
-#[schemars(deny_unknown_fields)]
+#[schemars(deny_unknown_fields, extend("x-tombi-table-keys-order" = { "properties": "schema" }))]
 pub(crate) struct TaskOutput {
     /// Print the line naming the command a task runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -295,7 +300,7 @@ pub(crate) struct TaskOutput {
 
 /// `[output.tool]`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
-#[schemars(deny_unknown_fields)]
+#[schemars(deny_unknown_fields, extend("x-tombi-table-keys-order" = { "properties": "schema" }))]
 pub(crate) struct ToolOutput {
     /// Pass the tool its own quiet flag (`npm --silent`, `make -s`), where it
     /// has one that keeps the task's output.
@@ -312,7 +317,7 @@ impl ToolOutput {
 
 /// `[output.task]`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
-#[schemars(deny_unknown_fields)]
+#[schemars(deny_unknown_fields, extend("x-tombi-table-keys-order" = { "properties": "schema" }))]
 pub(crate) struct StreamOutput {
     /// Show the task's stdout. `false` discards it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -332,16 +337,17 @@ impl StreamOutput {
 
 /// `[tools.<name>]`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
-#[schemars(deny_unknown_fields)]
+#[schemars(deny_unknown_fields, extend("x-tombi-table-keys-order" = { "properties": "schema" }))]
 pub(crate) struct ToolSettings {
     /// Variables every invocation of this tool gets, over `[env]`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[schemars(extend("x-tombi-additional-key-label" = "var_name"))]
     pub env: BTreeMap<String, String>,
 }
 
 /// `[tasks.<name>]`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
-#[schemars(deny_unknown_fields)]
+#[schemars(deny_unknown_fields, extend("x-tombi-table-keys-order" = { "properties": "schema" }))]
 pub(crate) struct TaskSettings {
     /// The task source that must supply this task (`just`, `package.json`, …).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -354,13 +360,14 @@ pub(crate) struct TaskSettings {
     /// The runtime this task runs on, over `[runtime]`.
     #[serde(default, skip_serializing_if = "RuntimeSettings::is_empty")]
     pub runtime: RuntimeSettings,
-    /// Variables this task's process gets, over `[tools.<name>.env]` and
-    /// `[env]`.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub env: BTreeMap<String, String>,
     /// This task's output, over `[output]`.
     #[serde(default, skip_serializing_if = "task_output_is_empty")]
     pub output: TaskOutput,
+    /// Variables this task's process gets, over `[tools.<name>.env]` and
+    /// `[env]`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[schemars(extend("x-tombi-additional-key-label" = "var_name"))]
+    pub env: BTreeMap<String, String>,
 }
 
 fn task_output_is_empty(output: &TaskOutput) -> bool {

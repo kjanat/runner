@@ -37,7 +37,7 @@
 		"experimentalZsh": true,
 	},
 	"yaml": { "printWidth": 160 },
-	"jsonSchemaSort": { "associations": ["**/schema.json", "**/*.schema.json"] },
+	"jsonSchemaSort": { "associations": ["**/schema.json", "**/*.schema.json"], "preservePropertyOrder": true },
 	"exec": {
 		"cwd": "${configDir}",
 		"cacheKey": "1",
