@@ -1,6 +1,5 @@
-#![cfg(unix)]
-
 //! Execution boundaries exercised with harmless fake host tools.
+#![cfg(unix)]
 
 mod support;
 
@@ -8,8 +7,6 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicUsize, Ordering};
-
-use actions_rs::env::vars::{CI, GITHUB_ACTIONS};
 
 fn write_executable(path: &Path, contents: &str) {
     use std::io::Write as _;
@@ -143,6 +140,8 @@ fn without_a_terminal_the_default_downloads_and_an_explicit_ask_refuses() {
 #[cfg(target_os = "linux")]
 #[test]
 fn on_a_terminal_the_default_asks_unless_ci_or_github_actions_says_otherwise() {
+    use actions_rs::env::vars::{CI, GITHUB_ACTIONS};
+
     let Some(script) = ["/usr/bin/script", "/bin/script"]
         .into_iter()
         .map(Path::new)

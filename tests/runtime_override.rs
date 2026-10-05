@@ -422,10 +422,7 @@ fn runtime_does_not_hijack_a_non_js_file() {
         return;
     }
     #[cfg(not(unix))]
-    {
-        eprintln!("skipping: needs a POSIX shell");
-        return;
-    }
+    eprintln!("skipping: needs a POSIX shell");
     #[cfg(unix)]
     {
         let proj = probe_project("shell").executable("script.sh", "#!/bin/sh\necho SHELL-OK\n");
@@ -574,10 +571,7 @@ fn runtime_node_dispatches_node_run_instead_of_erroring() {
 #[test]
 fn every_runtime_forwards_user_args_identically() {
     #[cfg(not(unix))]
-    {
-        eprintln!("skipping: the echo script needs a POSIX shell");
-        return;
-    }
+    eprintln!("skipping: the echo script needs a POSIX shell");
     #[cfg(unix)]
     {
         // node needs an injected `--`, deno must not get one, bun needs
