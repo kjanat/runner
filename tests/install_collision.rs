@@ -1,11 +1,10 @@
-#![cfg(unix)]
-
 //! Integration tests for install-directory collisions.
 //!
 //! `runner install`'s multi-PM executor is exercised here against fake package
 //! managers on `PATH`, shell scripts that log when they start and finish and
 //! sleep in between. One manager installs a shared `node_modules/`, and
 //! managers with their own directories run alongside it.
+#![cfg(unix)]
 
 mod support;
 

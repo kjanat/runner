@@ -8,6 +8,8 @@ targets-json := "packaging" / "npm" / "targets.json"
 
 schema-dir := "schemas"
 
+lint-targets := "x86_64-pc-windows-msvc aarch64-apple-darwin x86_64-unknown-freebsd x86_64-unknown-illumos x86_64-pc-solaris aarch64-unknown-linux-gnu wasm32-wasip1 wasm32-wasip2 wasm32-unknown-unknown"
+
 [arg('bin', pattern='run|runner')]
 [arg('profile', pattern='dev|release|')]
 [group('bins')]
@@ -31,6 +33,22 @@ ls:
 [group('lint')]
 lint-sh:
     shellcheck -x -o all .github/scripts/*.sh install.sh
+
+[doc('Lint every crate for each target the host does not compile, matching CI')]
+[group('lint')]
+lint-targets:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    rustup target add {{ lint-targets }}
+    for target in {{ lint-targets }}; do
+        echo "→ clippy {{ BLUE }}${target}{{ NORMAL }}"
+        cargo clippy --workspace --all-targets --all-features --target "${target}" -- -D warnings -D clippy::all
+    done
+
+[doc('Lint every feature combination of the CLI, matching CI')]
+[group('lint')]
+lint-features:
+    cargo hack clippy --feature-powerset --package runner-run --all-targets -- -D warnings -D clippy::all
 
 # Drift guard: just gen-schema && git diff --exit-code schemas/
 [doc('Regenerate the committed JSON Schemas')]

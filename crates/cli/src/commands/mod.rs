@@ -640,12 +640,14 @@ pub(crate) fn emit_task_killed(
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
+    #[cfg(any(unix, windows))]
     use std::fs;
     use std::path::PathBuf;
     use std::process::Command;
 
     use super::{configure_spawn, group_emission};
     use crate::resolver::ResolutionOverrides;
+    #[cfg(any(unix, windows))]
     use crate::tool::test_support::TempDir;
 
     #[test]
