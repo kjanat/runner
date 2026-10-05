@@ -289,16 +289,31 @@ fn confirm_fetch(action: &str) -> bool {
 }
 
 fn authorize_fetch(overrides: &ResolutionOverrides, action: &str) -> anyhow::Result<()> {
-    if overrides.executes()
-        && !runner_core::reach::permitted(
-            runner_core::Reach::Network,
-            run::core::download(overrides),
-            || confirm_fetch(action),
-        )
-    {
+    if !overrides.executes() {
+        if overrides.download.value == crate::config::Download::Refuse {
+            anyhow::bail!("{}", network_refused(action));
+        }
+        explain_ask(overrides);
+        return Ok(());
+    }
+    if !runner_core::reach::permitted(
+        runner_core::Reach::Network,
+        run::core::download(overrides),
+        || confirm_fetch(action),
+    ) {
         anyhow::bail!("{}", network_refused(action));
     }
     Ok(())
+}
+
+/// Note in a dry run that a real run asks before it reaches the network.
+fn explain_ask(overrides: &ResolutionOverrides) {
+    if overrides.download.value == crate::config::Download::Ask {
+        print_explain(
+            overrides,
+            "download: ask; a real run asks before it reaches the network",
+        );
+    }
 }
 
 fn network_refused(action: &str) -> String {

@@ -201,7 +201,7 @@ fn explain_install_never_executes_even_with_multiple_package_managers() {
         "[package]\nname = 'audit'\nversion = '0.0.0'\n",
     );
     fixture.program("cargo");
-    let output = fixture.run(&["--dry-run", "install", "--no-tools"], "false");
+    let output = fixture.run(&["--dry-run", "install", "--no-tools"], "true");
     assert!(
         output.status.success(),
         "{}",
@@ -210,6 +210,16 @@ fn explain_install_never_executes_even_with_multiple_package_managers() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("argv:") && stderr.contains("npm") && stderr.contains("cargo"),
+        "{stderr}"
+    );
+    fixture.assert_not_executed();
+    let refused = fixture.run(&["--dry-run", "install", "--no-tools"], "false");
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(!refused.status.success(), "{stderr}");
+    assert!(
+        stderr.contains(
+            "Installing dependencies with npm and cargo may access the network, which was refused"
+        ),
         "{stderr}"
     );
     fixture.assert_not_executed();
@@ -254,19 +264,49 @@ fn explain_never_executes_sequential_or_parallel_chains() {
 }
 
 #[test]
-fn explain_does_not_execute_or_authorize_a_network_fallback() {
+fn explain_reports_the_download_policy_of_a_network_fallback() {
     let fixture = Fixture::new();
     fixture.program("npx");
-    let output = fixture.run(
-        &["--dry-run", "run", "audit-package-not-installed"],
-        "false",
+    let refused = "task \"audit-package-not-installed\" not found. Running `npx \
+                   audit-package-not-installed` may access the network, which was refused";
+    for args in [
+        &["--dry-run", "run", "audit-package-not-installed"][..],
+        &["why", "audit-package-not-installed"],
+        &["run", "audit-package-not-installed"],
+    ] {
+        let output = fixture.run(args, "false");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{args:?}: {stderr}");
+        assert!(stderr.contains(refused), "{args:?}: {stderr}");
+        fixture.assert_not_executed();
+    }
+    let asked = fixture.run(&["--dry-run", "run", "audit-package-not-installed"], "ask");
+    let stderr = String::from_utf8_lossy(&asked.stderr);
+    assert!(asked.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("Network")
+            && stderr.contains("a real run asks before it reaches the network"),
+        "{stderr}"
+    );
+    let why = fixture.run(&["why", "audit-package-not-installed"], "ask");
+    assert!(
+        why.status.success(),
+        "{}",
+        String::from_utf8_lossy(&why.stderr)
     );
     assert!(
-        output.status.success(),
+        String::from_utf8_lossy(&why.stdout)
+            .contains("A real run asks before it reaches the network."),
         "{}",
-        String::from_utf8_lossy(&output.stderr)
+        String::from_utf8_lossy(&why.stdout)
     );
-    assert!(String::from_utf8_lossy(&output.stderr).contains("Network"));
+    let allowed = fixture.run(&["--dry-run", "run", "audit-package-not-installed"], "true");
+    let stderr = String::from_utf8_lossy(&allowed.stderr);
+    assert!(allowed.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("Network") && !stderr.contains("download: ask"),
+        "{stderr}"
+    );
     fixture.assert_not_executed();
 }
 
@@ -294,10 +334,11 @@ fn selected_package_obeys_download_and_dry_run() {
         ],
         "false",
     );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
     assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
+        stderr.contains("may access the network, which was refused"),
+        "{stderr}"
     );
     fixture.assert_not_executed();
 }
@@ -871,7 +912,7 @@ fn yarn_install_preview_and_execution_share_the_registry_variant() {
                 "--frozen",
                 "--no-scripts",
             ],
-            "false",
+            "true",
         );
         assert!(
             explained.status.success(),

@@ -678,9 +678,9 @@ The table is data so article 4 can be a test. The prompt lives in
 `plan`, keyed on `reach` and `policy.download`, and it is the same prompt for
 every network rung. Exec capabilities are tried only in the rung matching
 their declared reach; a local exec capability precedes fetching tool managers.
-An install applies the download policy only when a layer sets it. Explanation stops
-before authorization and execution, so it can show a network plan under
-`download = false`.
+An install applies the download policy only when a layer sets it. Explanation
+stops before execution and never prompts. Under `download = false` it reports
+the refusal the run would hit, and under `ask` it notes that the run asks first.
 
 ### 4.8 Versions
 
