@@ -44,7 +44,7 @@ jobs:
           key: fmt-tools-${{ runner.os }}-${{ hashFiles('.dprint.jsonc', 'rustfmt.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}
           restore-keys: fmt-tools-${{ runner.os }}-
       - uses: taiki-e/install-action@v2
-        with: { tool: "just,uv,bacon,tombi,shellcheck" }
+        with: { tool: "just,uv,bacon,tombi,shellcheck,cargo-hack" }
       - uses: $/.github/actions/setup-dprint
       - run: |
           mise_toml="$(yq -o toml -p json      <<<"${MISE}")"
@@ -53,7 +53,7 @@ jobs:
       - uses: jdx/mise-action@v5
         with: { mise_toml: "${{ env.MISE_TOML }}" }
       - uses: $/
-      - run: runner --pm bun install --frozen -sk fmt:check just:lint-sh cargo:lint cargo:t typecheck test:facade
+      - run: runner --pm bun install --frozen -sk fmt:check just:lint-sh cargo:lint just:lint-targets just:lint-features cargo:t typecheck test:facade
 
   create-release:
     name: create draft release
