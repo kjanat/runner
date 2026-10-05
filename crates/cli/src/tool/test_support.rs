@@ -42,6 +42,10 @@ impl Drop for TempDir {
 }
 
 thread_local! {
+    #[allow(
+        clippy::missing_const_for_thread_local,
+        reason = "rust-lang/rust-clippy#17566 flags this already-const initializer on targets without native thread-local storage"
+    )]
     static PROJECTS: std::cell::RefCell<Vec<TempDir>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 

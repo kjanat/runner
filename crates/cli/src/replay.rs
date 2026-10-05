@@ -108,6 +108,11 @@ impl Capture {
         *self.code.lock().unwrap() = Some(code);
     }
 
+    #[allow(
+        clippy::uninhabited_references,
+        reason = "rust-lang/rust-clippy#11984 flags this safe deref where `File` is uninhabited, \
+                  as on wasm32-unknown-unknown"
+    )]
     fn render(&self, failures: usize, out: &mut impl Write) -> io::Result<()> {
         self.closed.store(true, Ordering::SeqCst);
         let Some(code) = *self.code.lock().unwrap() else {
