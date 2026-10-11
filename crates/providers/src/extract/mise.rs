@@ -111,6 +111,7 @@ enum CliOutcome {
 fn cli_tasks(dir: &Path) -> CliOutcome {
     let output = match super::command("mise")
         .arg("tasks")
+        .arg("--all")
         .arg("--json")
         .current_dir(dir)
         .output()
@@ -168,12 +169,16 @@ fn parse_cli_output(
         }
         let description = entry.description_or_fallback();
         let detail = Box::new(entry.detail(project_root));
+        let name = entry
+            .name
+            .strip_prefix("//:")
+            .map_or_else(|| entry.name.clone(), str::to_owned);
         tasks.push(ExtractedTask::Recipe {
-            name: entry.name.clone(),
+            name: name.clone(),
             description,
             detail,
         });
-        push_aliases(&mut tasks, &entry.name, entry.aliases);
+        push_aliases(&mut tasks, &name, entry.aliases);
     }
     tasks.sort_by(|a, b| a.name().cmp(b.name()));
     Ok(tasks)
@@ -1524,6 +1529,26 @@ mod tests {
             names_of(&tasks),
             ["deep", "file-task", "nested-config", "root"]
         );
+    }
+
+    #[test]
+    fn cli_output_names_monorepo_tasks_by_config_root() {
+        let dir = TempDir::new("mise-cli-monorepo");
+        let project = dir
+            .path()
+            .canonicalize()
+            .expect("temp dir should canonicalize");
+        let payload = serde_json::json!([
+            entry("//:format", &project.join("mise.toml")),
+            entry(
+                "//scripts/probe:test",
+                &project.join("scripts").join("probe").join("mise.toml"),
+            ),
+        ])
+        .to_string();
+
+        let tasks = parse_cli_output(payload.as_bytes(), &project).expect("payload should parse");
+        assert_eq!(names_of(&tasks), ["//scripts/probe:test", "format"]);
     }
 
     #[test]

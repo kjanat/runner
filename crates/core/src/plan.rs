@@ -2360,7 +2360,7 @@ pub fn has_local_prefix(token: &str) -> bool {
         || token.starts_with("../")
         || token.starts_with(".\\")
         || token.starts_with("..\\")
-        || token.starts_with('/')
+        || (token.starts_with('/') && !token.starts_with("//"))
         || token.starts_with('\\')
         || token.starts_with('~')
         || windows_drive_abs(token)
@@ -3400,6 +3400,14 @@ mod tests {
             NameShape::of("golang.org/x/tools/cmd/godoc@latest"),
             NameShape::PATH_LIKE
         );
+    }
+
+    #[test]
+    fn monorepo_task_names_are_not_local_paths() {
+        assert!(super::has_local_prefix("/usr/bin/x"));
+        assert!(super::has_local_prefix("./x"));
+        assert!(!super::has_local_prefix("//:format"));
+        assert!(!super::has_local_prefix("//scripts/probe:test"));
     }
 
     #[test]
