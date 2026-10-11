@@ -74,6 +74,9 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - The network prompt and its refusal name what would run, such as
   `Installing tools with mise and dependencies with bun` or
   ``Running `npx eslint` ``. Shadowed installers are left out (#167).
+- runner lists tasks from every mise config root in a monorepo. A nested
+  task keeps its `//dir:task` name, and `run //dir:task` runs it. A root
+  task drops its `//:` prefix.
 
 ## [0.27.1] - 2026-09-30
 
