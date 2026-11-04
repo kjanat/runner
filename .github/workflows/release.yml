@@ -40,6 +40,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with: { save-if: "${{ github.event_name != 'pull_request' }}" }
+      - uses: kjanat/shellcheck-rs@master
       - uses: actions/cache@v6
         with:
           path: |
@@ -57,7 +58,8 @@ jobs:
       - uses: jdx/mise-action@v5
         with: { mise_toml: "${{ env.MISE_TOML }}" }
       - uses: $/
-      - run: runner --pm bun install --frozen -sk just:lint-sh cargo:lint just:lint-targets just:lint-features cargo:t typecheck test:facade
+      - name: Check the checkers
+        run: runner --pm bun install --frozen -sk just:lint-sh cargo:lint just:lint-targets just:lint-features cargo:t typecheck test:facade
 
   fmt:
     name: fmt
@@ -122,14 +124,16 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo man --output packaging/man
       - name: archive and upload to release
+        env:
+          archive: &archive "runner-${{ env.RELEASE_TAG }}-man.tar.gz"
+          archive_sha: "runner-${{ env.RELEASE_TAG }}-man.sha256"
         run: |
-          archive="runner-${RELEASE_TAG}-man.tar.gz"
           tar -C packaging/man -czf "${archive}" .
-          sha256sum "${archive}" >"runner-${RELEASE_TAG}-man.sha256"
-          gh release upload "${RELEASE_TAG}" "${archive}" "runner-${RELEASE_TAG}-man.sha256" --clobber
+          sha256sum "${archive}" >"${archive_sha}"
+          gh release upload "${RELEASE_TAG}" "${archive}" "${archive_sha}" --clobber
       - name: attest build provenance
         uses: actions/attest-build-provenance@v4
-        with: { subject-path: "runner-${{ env.RELEASE_TAG }}-man.tar.gz" }
+        with: { subject-path: *archive }
       - uses: actions/upload-artifact@v7
         with: { name: man-pages, path: packaging/man/, if-no-files-found: error, retention-days: 14 }
 

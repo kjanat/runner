@@ -1,5 +1,6 @@
 # https://just.systems
 set unstable
+set lists := true
 
 # Version/triple live in recipe parameter defaults (evaluated per invocation), not globals; just evaluates globals on every run.
 build-pkgscript := "packaging" / "npm" / "scripts" / "build-packages.ts"
@@ -9,6 +10,9 @@ targets-json := "packaging" / "npm" / "targets.json"
 schema-dir := "schemas"
 
 lint-targets := "x86_64-pc-windows-msvc aarch64-apple-darwin x86_64-unknown-freebsd x86_64-unknown-illumos x86_64-pc-solaris aarch64-unknown-linux-gnu wasm32-wasip1 wasm32-wasip2 wasm32-unknown-unknown"
+
+# Detect the available linter (uses rshellcheck if found, otherwise falls back to shellcheck)
+SH_LINTER := which("rshellcheck") || "shellcheck"
 
 [arg('bin', pattern='run|runner')]
 [arg('profile', pattern='dev|release|')]
@@ -32,7 +36,7 @@ ls:
 [doc('Lint shell scripts at the strictest level, matching CI')]
 [group('lint')]
 lint-sh:
-    shellcheck -x -o all .github/scripts/*.sh install.sh
+    {{ SH_LINTER }} -x -o all .github/scripts/*.sh install.sh
 
 [doc('Lint every crate for each target the host does not compile, matching CI')]
 [group('lint')]

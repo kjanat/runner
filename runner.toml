@@ -1,0 +1,21 @@
+#:schema https://kjanat.github.io/runner/schemas/runner.toml.schema.json
+
+[chain]
+on_fail = "wait"
+
+[install]
+tools  = true
+frozen = false
+
+[output]
+warnings = true
+errors   = true
+summary  = true
+progress = true
+groups   = true
+timing   = true
+replay   = { failure = "plain", success = "grouped" }
+parallel = { buffer = true }
+
+[tasks."fmt:check"]
+env = { CARGO_TERM_QUIET = "true" }
