@@ -71,8 +71,7 @@ jobs:
             ~/.rustup/update-hashes
           key: fmt-tools-${{ runner.os }}-${{ hashFiles('.dprint.jsonc', 'rustfmt.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}
           restore-keys: fmt-tools-${{ runner.os }}-
-      - uses: $/.github/actions/setup-dprint
-      - run: kprint check
+      - uses: kjanat/dprint-check@v3
 
   create-release:
     name: create draft release
