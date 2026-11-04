@@ -776,6 +776,542 @@ fn task_candidates_from(
     candidates
 }
 
+/// Universal project task runner.
+#[derive(Debug, Parser)]
+#[command(
+    name = "runner",
+    about = clap::crate_description!(),
+    help_template = "{about-with-newline}{before-help}{usage-heading} {usage}\n\n{all-args}{after-help}",
+    disable_version_flag = true,
+    styles = HELP_STYLES,
+    arg_required_else_help = false,
+    add = SubcommandCandidates::new(task_candidates)
+)]
+pub(crate) struct Cli {
+    /// Global options shared with [`RunAliasCli`].
+    #[command(flatten)]
+    pub global: GlobalOpts,
+
+    /// Build and version output selectors.
+    #[command(flatten, next_help_heading = "Version output")]
+    pub version: VersionOpts,
+
+    /// Subcommand to execute. Defaults to [`Command::Info`] when absent.
+    #[command(subcommand)]
+    pub command: Option<Command>,
+}
+
+/// Root-level build and version output selectors shared by both binaries.
+///
+/// These are ordinary clap arguments so clap owns their spelling, grouping,
+/// conflicts, requirements, usage, and help rendering. They deliberately are
+/// not global: a selector after a task or subcommand belongs to that command.
+#[derive(Debug, Args)]
+#[group(skip)]
+pub(crate) struct VersionOpts {
+    #[command(flatten)]
+    pub short: ShortVersion,
+
+    #[command(flatten)]
+    pub detailed: DetailedVersion,
+
+    /// Print the version, build channel, revision, and dirty state.
+    #[arg(long, group = "version-selector", conflicts_with = "json")]
+    pub revision: bool,
+
+    /// Emit detailed build information as JSON.
+    #[arg(long, requires = "detailed-version")]
+    pub json: bool,
+}
+
+/// `-v` and `-V`.
+#[derive(Debug, Args)]
+#[group(skip)]
+pub(crate) struct ShortVersion {
+    /// Print the concise version.
+    #[arg(
+        short = 'v',
+        visible_short_alias = 'V',
+        group = "version-selector",
+        conflicts_with = "json"
+    )]
+    pub concise: bool,
+}
+
+impl ShortVersion {
+    pub(crate) const fn requested(&self) -> bool {
+        self.concise
+    }
+}
+
+/// `--version` and `--build-options`.
+#[derive(Debug, Args)]
+#[group(skip)]
+pub(crate) struct DetailedVersion {
+    /// Print detailed build information.
+    #[arg(
+        long = "version",
+        visible_alias = "build-options",
+        group = "version-selector",
+        group = "detailed-version"
+    )]
+    pub version: bool,
+}
+
+impl DetailedVersion {
+    pub(crate) const fn requested(&self) -> bool {
+        self.version
+    }
+}
+
+/// Flags shared by both `runner` and `run`, global to every subcommand.
+#[derive(Debug, Args)]
+pub(crate) struct GlobalOpts {
+    #[arg(
+        long = "dir",
+        global = true,
+        value_name = "PATH",
+        value_hint = clap::ValueHint::DirPath,
+        value_parser = clap::value_parser!(PathBuf),
+        help = "Project directory, the current one when unset",
+        display_order = help_order::DIR,
+    )]
+    pub project_dir: Option<PathBuf>,
+
+    #[arg(
+        long = "pm",
+        global = true,
+        value_name = "NAME",
+        value_parser = crate::provider::parse_package_manager,
+        help = PM_HELP.as_str(),
+        display_order = help_order::PM,
+    )]
+    pub pm: Option<ProviderId>,
+
+    #[arg(
+        long = "runtime",
+        global = true,
+        value_name = "NAME",
+        value_parser = crate::provider::parse_js_runtime,
+        help = RUNTIME_HELP.as_str(),
+        long_help = RUNTIME_LONG_HELP.as_str(),
+        display_order = help_order::RUNTIME,
+    )]
+    pub runtime: Option<ProviderId>,
+
+    #[arg(
+        long = "source",
+        global = true,
+        value_name = "SOURCE",
+        value_parser = crate::provider::parse_task_source,
+        help = SOURCE_HELP.as_str(),
+        display_order = help_order::SOURCE,
+    )]
+    pub source: Option<ProviderId>,
+
+    #[arg(
+        long = "package",
+        global = true,
+        value_name = "NAME",
+        help = "Run <TASK> as the binary npm package <NAME> declares",
+        display_order = help_order::PACKAGE,
+    )]
+    pub package: Option<String>,
+
+    #[command(flatten)]
+    pub network: DownloadFlags,
+
+    #[command(flatten)]
+    pub failure: FailureFlags,
+
+    #[arg(
+        long = "dry-run",
+        global = true,
+        help = "Print what would run and why, without running it",
+        display_order = help_order::DRY_RUN,
+    )]
+    pub dry_run: bool,
+
+    #[command(flatten)]
+    pub diagnostics: WarningFlags,
+
+    #[arg(
+        short = 'q',
+        long = "quiet",
+        global = true,
+        action = clap::ArgAction::Count,
+        display_order = help_order::QUIET,
+        help = concat!("Print less, repeatable: ", cyan!("-q"), " through ", cyan!("-qqqq")),
+        long_help = concat!(
+            "Print less, repeatable. The variable takes the count.\n",
+            "\n",
+            "  ", cyan!("-q"), "     ", cyan!("1"), "  hide progress, groups, timing and the summary\n",
+            "  ", cyan!("-qq"), "    ", cyan!("2"), "  also hide warnings and quiet the tool\n",
+            "  ", cyan!("-qqq"), "   ", cyan!("3"), "  also hide runner's error messages\n",
+            "  ", cyan!("-qqqq"), "  ", cyan!("4"), "  print nothing of runner's own"
+        ),
+    )]
+    pub quiet: u8,
+
+    #[arg(
+        long = "schema-version",
+        global = true,
+        value_parser = clap::value_parser!(u32).range(1..=1),
+        value_name = "N",
+        display_order = help_order::SCHEMA_VERSION,
+        help = concat!("Pin ", cyan!("--json"), " schema (currently always ", cyan!("1"), ")"),
+    )]
+    pub schema_version: Option<u32>,
+}
+
+/// `--download` and its negation.
+#[derive(Debug, Args)]
+pub(crate) struct DownloadFlags {
+    #[arg(
+        long = "download",
+        global = true,
+        value_name = "WHEN",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        value_parser = crate::config::Download::parse,
+        help = concat!(
+            "Download packages a command needs: ", cyan!("true"), ", ", cyan!("false"), " or ",
+            cyan!("ask")
+        ),
+        display_order = help_order::DOWNLOAD,
+    )]
+    pub download: Option<crate::config::Download>,
+
+    #[arg(
+        long = "no-download",
+        global = true,
+        help = "Refuse a command that needs a download",
+        display_order = help_order::DOWNLOAD + 1,
+    )]
+    pub no_download: bool,
+}
+
+/// `--on-fail` and its aliases.
+#[derive(Debug, Args)]
+pub(crate) struct FailureFlags {
+    #[arg(
+        long = "on-fail",
+        global = true,
+        value_name = "ACTION",
+        value_enum,
+        help = "What a chain does after a task fails",
+        display_order = help_order::CHAIN_FAILURE,
+    )]
+    pub on_fail: Option<FailurePolicy>,
+
+    #[arg(
+        short = 'k',
+        long = "keep-going",
+        global = true,
+        help = concat!("Alias for ", cyan!("--on-fail continue")),
+        display_order = help_order::CHAIN_FAILURE + 1,
+    )]
+    pub keep_going: bool,
+
+    #[arg(
+        short = 'K',
+        long = "kill-on-fail",
+        global = true,
+        help = concat!("Alias for ", cyan!("--on-fail kill")),
+        display_order = help_order::CHAIN_FAILURE + 2,
+    )]
+    pub kill_on_fail: bool,
+}
+
+/// `--warnings` and its negation.
+#[derive(Debug, Args)]
+pub(crate) struct WarningFlags {
+    #[arg(
+        long = "warnings",
+        global = true,
+        help = "Print warnings",
+        display_order = help_order::WARNINGS,
+    )]
+    pub warnings: bool,
+
+    #[arg(
+        long = "no-warnings",
+        global = true,
+        help = "Hide warnings",
+        display_order = help_order::WARNINGS + 1,
+    )]
+    pub no_warnings: bool,
+}
+
+/// Available subcommands.
+#[derive(Debug, Subcommand)]
+pub(crate) enum Command {
+    #[command(
+        alias = "r",
+        about = concat!("Run or exec a task; ", cyan!("-s"), "/", cyan!("-p"), " chain multiple"),
+    )]
+    Run {
+        /// Task name or command to execute. In chain mode, the first task in the chain.
+        #[arg(add = ArgValueCandidates::new(task_candidates))]
+        task: Option<String>,
+        #[arg(
+            trailing_var_arg = true,
+            allow_hyphen_values = true,
+            add = ArgValueCandidates::new(chain_args_candidates),
+            help = ARGS_HELP,
+        )]
+        args: Vec<String>,
+        #[command(flatten)]
+        mode: ChainModeFlags,
+    },
+
+    /// List tasks from detected sources
+    #[command(alias = "ls")]
+    List {
+        /// Print bare task names, one per line
+        #[arg(long)]
+        raw: bool,
+        /// Emit JSON instead of human-readable output
+        #[arg(long)]
+        json: bool,
+        #[arg(
+            long = "only",
+            value_name = "SOURCE",
+            value_delimiter = ',',
+            value_parser = crate::provider::parse_task_source,
+            help = LIST_ONLY_HELP.as_str(),
+        )]
+        only: Vec<ProviderId>,
+    },
+
+    #[command(
+        alias = "i",
+        about = concat!("Install deps; may chain tasks after; ", cyan!("-s"), "/", cyan!("-p"), " pick the post-install mode"),
+    )]
+    Install {
+        /// Install exactly what the lockfile pins, without changing it
+        #[arg(
+            short = 'f',
+            long = "frozen",
+            display_order = help_order::COMMAND
+        )]
+        frozen: bool,
+        /// Let the install update the lockfile
+        #[arg(long = "no-frozen", display_order = help_order::COMMAND + 1)]
+        no_frozen: bool,
+        /// Run dependencies' lifecycle scripts
+        #[arg(long = "scripts", display_order = help_order::COMMAND + 2)]
+        scripts: bool,
+        /// Skip dependencies' lifecycle scripts
+        #[arg(long = "no-scripts", display_order = help_order::COMMAND + 3)]
+        no_scripts: bool,
+        #[arg(
+            long = "tools",
+            display_order = help_order::COMMAND + 4,
+            help = concat!("Install detected toolchains first (", cyan!("mise install"), ")"),
+        )]
+        tools: bool,
+        /// Skip the toolchain step
+        #[arg(long = "no-tools", display_order = help_order::COMMAND + 5)]
+        no_tools: bool,
+        #[arg(
+            add = ArgValueCandidates::new(task_candidates),
+            help = concat!(
+                "Tasks to run after install, in sequence; ", cyan!("-p"),
+                " runs them concurrently once install finishes"
+            ),
+        )]
+        tasks: Vec<String>,
+        #[command(flatten)]
+        mode: ChainModeFlags,
+    },
+
+    /// Remove caches and build artifacts
+    Clean {
+        /// Skip confirmation prompt
+        #[arg(short, long)]
+        yes: bool,
+        #[arg(
+            long,
+            help = concat!("Include framework-specific Node build dirs like ", cyan!(".next")),
+        )]
+        include_framework: bool,
+    },
+
+    #[command(hide = true, about = concat!("Deprecated alias for ", cyan!("list")))]
+    Info {
+        /// Emit JSON instead of human-readable output
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// How a task would dispatch
+    Why {
+        /// Task name to analyze
+        task: String,
+        /// Emit JSON instead of human-readable output
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Resolver signals for this directory
+    Doctor {
+        /// Emit JSON instead of human-readable output
+        #[arg(long)]
+        json: bool,
+    },
+
+    #[command(about = concat!("Manage the project ", cyan!("runner.toml")))]
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
+
+    /// Generate shell completions
+    Completions {
+        #[arg(
+            value_parser = crate::commands::parse_shell_arg,
+            help = concat!(
+                "Target shell, bare name (", cyan!("zsh"), ") or full path (",
+                cyan!("/usr/bin/zsh"), "); defaults to ", cyan!("$SHELL")
+            ),
+        )]
+        shell: Option<Shell>,
+
+        /// Write the completion script to <PATH> instead of stdout
+        #[arg(
+            short = 'o',
+            long = "output",
+            value_name = "PATH",
+            value_hint = clap::ValueHint::FilePath,
+            value_parser = clap::value_parser!(PathBuf),
+        )]
+        output: Option<PathBuf>,
+    },
+
+    /// Render roff man pages (build: --features man)
+    #[cfg(feature = "man")]
+    #[command(hide = true)]
+    Man {
+        /// Write every page into this dir instead of the runner page to stdout
+        #[arg(
+            short = 'o',
+            long = "output",
+            value_name = "DIR",
+            value_hint = clap::ValueHint::DirPath,
+            value_parser = clap::value_parser!(PathBuf),
+        )]
+        output: Option<PathBuf>,
+    },
+
+    #[command(about = "Emit JSON Schemas")]
+    Schema {
+        /// Emit every committed schema into the output directory
+        #[arg(long)]
+        all: bool,
+        /// Write the schema to this file, or all schemas to this directory with --all
+        #[arg(
+            short = 'o',
+            long = "output",
+            value_name = "PATH",
+            value_hint = clap::ValueHint::FilePath,
+            value_parser = clap::value_parser!(PathBuf),
+        )]
+        output: Option<PathBuf>,
+    },
+
+    #[cfg(feature = "lsp")]
+    #[command(about = "Run the runner.toml language server (LSP) over stdio")]
+    Lsp,
+
+    #[command(external_subcommand)]
+    External(Vec<String>),
+}
+
+/// Actions under `runner config`.
+#[derive(Debug, Clone, Copy, Subcommand)]
+pub(crate) enum ConfigAction {
+    /// Write a starter runner.toml to the project root
+    Init {
+        /// Overwrite an existing runner.toml
+        #[arg(short, long)]
+        force: bool,
+    },
+    /// Print the effective config and where it loaded from
+    Show {
+        /// Emit JSON instead of TOML
+        #[arg(long)]
+        json: bool,
+    },
+    /// Parse and validate runner.toml; exit 2 on error
+    Validate,
+    /// Print the resolved runner.toml path
+    Path,
+}
+
+/// CLI used by the `run` alias binary, a shortcut for `runner run <task>`.
+#[derive(Debug, Parser)]
+#[command(
+    name = "run",
+    about = "Run or exec a task via the detected package manager",
+    help_template = "{about-with-newline}{before-help}{usage-heading} {usage}\n\n{all-args}{after-help}",
+    after_help = concat!(
+        "Use a help or version flag before a task for this binary's own output.\n",
+        "Combining a version selector with ", cyan!("-q"), "/", cyan!("--quiet"), " selects concise output.\n",
+        "After a task name they are forwarded to the task instead (use ", cyan!("--"), " to force forwarding).",
+    ),
+    styles = HELP_STYLES,
+    arg_required_else_help = false,
+    disable_version_flag = true,
+)]
+pub(crate) struct RunAliasCli {
+    #[command(flatten)]
+    pub global: GlobalOpts,
+
+    /// Task name or command. When omitted, prints project info.
+    #[arg(add = ArgValueCandidates::new(task_candidates))]
+    pub task: Option<String>,
+
+    #[arg(
+        trailing_var_arg = true,
+        allow_hyphen_values = true,
+        add = ArgValueCandidates::new(chain_args_candidates),
+        help = ARGS_HELP,
+    )]
+    pub args: Vec<String>,
+
+    #[command(flatten)]
+    pub mode: ChainModeFlags,
+
+    #[command(flatten, next_help_heading = "Version output")]
+    pub version: VersionOpts,
+}
+
+/// `-s` and `-p`.
+#[derive(Debug, Args, Default, Clone, Copy)]
+pub(crate) struct ChainModeFlags {
+    /// Chain tasks in order
+    #[arg(short = 's', long, display_order = help_order::CHAIN_MODE)]
+    pub sequential: bool,
+    /// Chain tasks concurrently
+    #[arg(short = 'p', long, display_order = help_order::CHAIN_MODE + 1)]
+    pub parallel: bool,
+}
+
+impl ChainModeFlags {
+    /// The chain mode the flags select, if any.
+    pub(crate) const fn mode(self) -> Option<crate::chain::ChainMode> {
+        if self.parallel {
+            Some(crate::chain::ChainMode::Parallel)
+        } else if self.sequential {
+            Some(crate::chain::ChainMode::Sequential)
+        } else {
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::ffi::OsStr;
@@ -1853,541 +2389,5 @@ mod tests {
         assert!(mode.parallel, "-p should set parallel");
         assert!(!mode.sequential);
         assert_eq!(tasks, vec!["build".to_string(), "test".to_string()]);
-    }
-}
-
-/// Universal project task runner.
-#[derive(Debug, Parser)]
-#[command(
-    name = "runner",
-    about = clap::crate_description!(),
-    help_template = "{about-with-newline}{before-help}{usage-heading} {usage}\n\n{all-args}{after-help}",
-    disable_version_flag = true,
-    styles = HELP_STYLES,
-    arg_required_else_help = false,
-    add = SubcommandCandidates::new(task_candidates)
-)]
-pub(crate) struct Cli {
-    /// Global options shared with [`RunAliasCli`].
-    #[command(flatten)]
-    pub global: GlobalOpts,
-
-    /// Build and version output selectors.
-    #[command(flatten, next_help_heading = "Version output")]
-    pub version: VersionOpts,
-
-    /// Subcommand to execute. Defaults to [`Command::Info`] when absent.
-    #[command(subcommand)]
-    pub command: Option<Command>,
-}
-
-/// Root-level build and version output selectors shared by both binaries.
-///
-/// These are ordinary clap arguments so clap owns their spelling, grouping,
-/// conflicts, requirements, usage, and help rendering. They deliberately are
-/// not global: a selector after a task or subcommand belongs to that command.
-#[derive(Debug, Args)]
-#[group(skip)]
-pub(crate) struct VersionOpts {
-    #[command(flatten)]
-    pub short: ShortVersion,
-
-    #[command(flatten)]
-    pub detailed: DetailedVersion,
-
-    /// Print the version, build channel, revision, and dirty state.
-    #[arg(long, group = "version-selector", conflicts_with = "json")]
-    pub revision: bool,
-
-    /// Emit detailed build information as JSON.
-    #[arg(long, requires = "detailed-version")]
-    pub json: bool,
-}
-
-/// `-v` and `-V`.
-#[derive(Debug, Args)]
-#[group(skip)]
-pub(crate) struct ShortVersion {
-    /// Print the concise version.
-    #[arg(
-        short = 'v',
-        visible_short_alias = 'V',
-        group = "version-selector",
-        conflicts_with = "json"
-    )]
-    pub concise: bool,
-}
-
-impl ShortVersion {
-    pub(crate) const fn requested(&self) -> bool {
-        self.concise
-    }
-}
-
-/// `--version` and `--build-options`.
-#[derive(Debug, Args)]
-#[group(skip)]
-pub(crate) struct DetailedVersion {
-    /// Print detailed build information.
-    #[arg(
-        long = "version",
-        visible_alias = "build-options",
-        group = "version-selector",
-        group = "detailed-version"
-    )]
-    pub version: bool,
-}
-
-impl DetailedVersion {
-    pub(crate) const fn requested(&self) -> bool {
-        self.version
-    }
-}
-
-/// Flags shared by both `runner` and `run`, global to every subcommand.
-#[derive(Debug, Args)]
-pub(crate) struct GlobalOpts {
-    #[arg(
-        long = "dir",
-        global = true,
-        value_name = "PATH",
-        value_hint = clap::ValueHint::DirPath,
-        value_parser = clap::value_parser!(PathBuf),
-        help = "Project directory, the current one when unset",
-        display_order = help_order::DIR,
-    )]
-    pub project_dir: Option<PathBuf>,
-
-    #[arg(
-        long = "pm",
-        global = true,
-        value_name = "NAME",
-        value_parser = crate::provider::parse_package_manager,
-        help = PM_HELP.as_str(),
-        display_order = help_order::PM,
-    )]
-    pub pm: Option<ProviderId>,
-
-    #[arg(
-        long = "runtime",
-        global = true,
-        value_name = "NAME",
-        value_parser = crate::provider::parse_js_runtime,
-        help = RUNTIME_HELP.as_str(),
-        long_help = RUNTIME_LONG_HELP.as_str(),
-        display_order = help_order::RUNTIME,
-    )]
-    pub runtime: Option<ProviderId>,
-
-    #[arg(
-        long = "source",
-        global = true,
-        value_name = "SOURCE",
-        value_parser = crate::provider::parse_task_source,
-        help = SOURCE_HELP.as_str(),
-        display_order = help_order::SOURCE,
-    )]
-    pub source: Option<ProviderId>,
-
-    #[arg(
-        long = "package",
-        global = true,
-        value_name = "NAME",
-        help = "Run <TASK> as the binary npm package <NAME> declares",
-        display_order = help_order::PACKAGE,
-    )]
-    pub package: Option<String>,
-
-    #[command(flatten)]
-    pub network: DownloadFlags,
-
-    #[command(flatten)]
-    pub failure: FailureFlags,
-
-    #[arg(
-        long = "dry-run",
-        global = true,
-        help = "Print what would run and why, without running it",
-        display_order = help_order::DRY_RUN,
-    )]
-    pub dry_run: bool,
-
-    #[command(flatten)]
-    pub diagnostics: WarningFlags,
-
-    #[arg(
-        short = 'q',
-        long = "quiet",
-        global = true,
-        action = clap::ArgAction::Count,
-        display_order = help_order::QUIET,
-        help = concat!("Print less, repeatable: ", cyan!("-q"), " through ", cyan!("-qqqq")),
-        long_help = concat!(
-            "Print less, repeatable. The variable takes the count.\n",
-            "\n",
-            "  ", cyan!("-q"), "     ", cyan!("1"), "  hide progress, groups, timing and the summary\n",
-            "  ", cyan!("-qq"), "    ", cyan!("2"), "  also hide warnings and quiet the tool\n",
-            "  ", cyan!("-qqq"), "   ", cyan!("3"), "  also hide runner's error messages\n",
-            "  ", cyan!("-qqqq"), "  ", cyan!("4"), "  print nothing of runner's own"
-        ),
-    )]
-    pub quiet: u8,
-
-    #[arg(
-        long = "schema-version",
-        global = true,
-        value_parser = clap::value_parser!(u32).range(1..=1),
-        value_name = "N",
-        display_order = help_order::SCHEMA_VERSION,
-        help = concat!("Pin ", cyan!("--json"), " schema (currently always ", cyan!("1"), ")"),
-    )]
-    pub schema_version: Option<u32>,
-}
-
-/// `--download` and its negation.
-#[derive(Debug, Args)]
-pub(crate) struct DownloadFlags {
-    #[arg(
-        long = "download",
-        global = true,
-        value_name = "WHEN",
-        num_args = 0..=1,
-        require_equals = true,
-        default_missing_value = "true",
-        value_parser = crate::config::Download::parse,
-        help = concat!(
-            "Download packages a command needs: ", cyan!("true"), ", ", cyan!("false"), " or ",
-            cyan!("ask")
-        ),
-        display_order = help_order::DOWNLOAD,
-    )]
-    pub download: Option<crate::config::Download>,
-
-    #[arg(
-        long = "no-download",
-        global = true,
-        help = "Refuse a command that needs a download",
-        display_order = help_order::DOWNLOAD + 1,
-    )]
-    pub no_download: bool,
-}
-
-/// `--on-fail` and its aliases.
-#[derive(Debug, Args)]
-pub(crate) struct FailureFlags {
-    #[arg(
-        long = "on-fail",
-        global = true,
-        value_name = "ACTION",
-        value_enum,
-        help = "What a chain does after a task fails",
-        display_order = help_order::CHAIN_FAILURE,
-    )]
-    pub on_fail: Option<FailurePolicy>,
-
-    #[arg(
-        short = 'k',
-        long = "keep-going",
-        global = true,
-        help = concat!("Alias for ", cyan!("--on-fail continue")),
-        display_order = help_order::CHAIN_FAILURE + 1,
-    )]
-    pub keep_going: bool,
-
-    #[arg(
-        short = 'K',
-        long = "kill-on-fail",
-        global = true,
-        help = concat!("Alias for ", cyan!("--on-fail kill")),
-        display_order = help_order::CHAIN_FAILURE + 2,
-    )]
-    pub kill_on_fail: bool,
-}
-
-/// `--warnings` and its negation.
-#[derive(Debug, Args)]
-pub(crate) struct WarningFlags {
-    #[arg(
-        long = "warnings",
-        global = true,
-        help = "Print warnings",
-        display_order = help_order::WARNINGS,
-    )]
-    pub warnings: bool,
-
-    #[arg(
-        long = "no-warnings",
-        global = true,
-        help = "Hide warnings",
-        display_order = help_order::WARNINGS + 1,
-    )]
-    pub no_warnings: bool,
-}
-
-/// Available subcommands.
-#[derive(Debug, Subcommand)]
-pub(crate) enum Command {
-    #[command(
-        alias = "r",
-        about = concat!("Run or exec a task; ", cyan!("-s"), "/", cyan!("-p"), " chain multiple"),
-    )]
-    Run {
-        /// Task name or command to execute. In chain mode, the first task in the chain.
-        #[arg(add = ArgValueCandidates::new(task_candidates))]
-        task: Option<String>,
-        #[arg(
-            trailing_var_arg = true,
-            allow_hyphen_values = true,
-            add = ArgValueCandidates::new(chain_args_candidates),
-            help = ARGS_HELP,
-        )]
-        args: Vec<String>,
-        #[command(flatten)]
-        mode: ChainModeFlags,
-    },
-
-    /// List tasks from detected sources
-    #[command(alias = "ls")]
-    List {
-        /// Print bare task names, one per line
-        #[arg(long)]
-        raw: bool,
-        /// Emit JSON instead of human-readable output
-        #[arg(long)]
-        json: bool,
-        #[arg(
-            long = "only",
-            value_name = "SOURCE",
-            value_delimiter = ',',
-            value_parser = crate::provider::parse_task_source,
-            help = LIST_ONLY_HELP.as_str(),
-        )]
-        only: Vec<ProviderId>,
-    },
-
-    #[command(
-        alias = "i",
-        about = concat!("Install deps; may chain tasks after; ", cyan!("-s"), "/", cyan!("-p"), " pick the post-install mode"),
-    )]
-    Install {
-        /// Install exactly what the lockfile pins, without changing it
-        #[arg(
-            short = 'f',
-            long = "frozen",
-            display_order = help_order::COMMAND
-        )]
-        frozen: bool,
-        /// Let the install update the lockfile
-        #[arg(long = "no-frozen", display_order = help_order::COMMAND + 1)]
-        no_frozen: bool,
-        /// Run dependencies' lifecycle scripts
-        #[arg(long = "scripts", display_order = help_order::COMMAND + 2)]
-        scripts: bool,
-        /// Skip dependencies' lifecycle scripts
-        #[arg(long = "no-scripts", display_order = help_order::COMMAND + 3)]
-        no_scripts: bool,
-        #[arg(
-            long = "tools",
-            display_order = help_order::COMMAND + 4,
-            help = concat!("Install detected toolchains first (", cyan!("mise install"), ")"),
-        )]
-        tools: bool,
-        /// Skip the toolchain step
-        #[arg(long = "no-tools", display_order = help_order::COMMAND + 5)]
-        no_tools: bool,
-        #[arg(
-            add = ArgValueCandidates::new(task_candidates),
-            help = concat!(
-                "Tasks to run after install, in sequence; ", cyan!("-p"),
-                " runs them concurrently once install finishes"
-            ),
-        )]
-        tasks: Vec<String>,
-        #[command(flatten)]
-        mode: ChainModeFlags,
-    },
-
-    /// Remove caches and build artifacts
-    Clean {
-        /// Skip confirmation prompt
-        #[arg(short, long)]
-        yes: bool,
-        #[arg(
-            long,
-            help = concat!("Include framework-specific Node build dirs like ", cyan!(".next")),
-        )]
-        include_framework: bool,
-    },
-
-    #[command(hide = true, about = concat!("Deprecated alias for ", cyan!("list")))]
-    Info {
-        /// Emit JSON instead of human-readable output
-        #[arg(long)]
-        json: bool,
-    },
-
-    /// How a task would dispatch
-    Why {
-        /// Task name to analyze
-        task: String,
-        /// Emit JSON instead of human-readable output
-        #[arg(long)]
-        json: bool,
-    },
-
-    /// Resolver signals for this directory
-    Doctor {
-        /// Emit JSON instead of human-readable output
-        #[arg(long)]
-        json: bool,
-    },
-
-    #[command(about = concat!("Manage the project ", cyan!("runner.toml")))]
-    Config {
-        #[command(subcommand)]
-        action: ConfigAction,
-    },
-
-    /// Generate shell completions
-    Completions {
-        #[arg(
-            value_parser = crate::commands::parse_shell_arg,
-            help = concat!(
-                "Target shell, bare name (", cyan!("zsh"), ") or full path (",
-                cyan!("/usr/bin/zsh"), "); defaults to ", cyan!("$SHELL")
-            ),
-        )]
-        shell: Option<Shell>,
-
-        /// Write the completion script to <PATH> instead of stdout
-        #[arg(
-            short = 'o',
-            long = "output",
-            value_name = "PATH",
-            value_hint = clap::ValueHint::FilePath,
-            value_parser = clap::value_parser!(PathBuf),
-        )]
-        output: Option<PathBuf>,
-    },
-
-    /// Render roff man pages (build: --features man)
-    #[cfg(feature = "man")]
-    #[command(hide = true)]
-    Man {
-        /// Write every page into this dir instead of the runner page to stdout
-        #[arg(
-            short = 'o',
-            long = "output",
-            value_name = "DIR",
-            value_hint = clap::ValueHint::DirPath,
-            value_parser = clap::value_parser!(PathBuf),
-        )]
-        output: Option<PathBuf>,
-    },
-
-    #[command(about = "Emit JSON Schemas")]
-    Schema {
-        /// Emit every committed schema into the output directory
-        #[arg(long)]
-        all: bool,
-        /// Write the schema to this file, or all schemas to this directory with --all
-        #[arg(
-            short = 'o',
-            long = "output",
-            value_name = "PATH",
-            value_hint = clap::ValueHint::FilePath,
-            value_parser = clap::value_parser!(PathBuf),
-        )]
-        output: Option<PathBuf>,
-    },
-
-    #[cfg(feature = "lsp")]
-    #[command(about = "Run the runner.toml language server (LSP) over stdio")]
-    Lsp,
-
-    #[command(external_subcommand)]
-    External(Vec<String>),
-}
-
-/// Actions under `runner config`.
-#[derive(Debug, Clone, Copy, Subcommand)]
-pub(crate) enum ConfigAction {
-    /// Write a starter runner.toml to the project root
-    Init {
-        /// Overwrite an existing runner.toml
-        #[arg(short, long)]
-        force: bool,
-    },
-    /// Print the effective config and where it loaded from
-    Show {
-        /// Emit JSON instead of TOML
-        #[arg(long)]
-        json: bool,
-    },
-    /// Parse and validate runner.toml; exit 2 on error
-    Validate,
-    /// Print the resolved runner.toml path
-    Path,
-}
-
-/// CLI used by the `run` alias binary, a shortcut for `runner run <task>`.
-#[derive(Debug, Parser)]
-#[command(
-    name = "run",
-    about = "Run or exec a task via the detected package manager",
-    help_template = "{about-with-newline}{before-help}{usage-heading} {usage}\n\n{all-args}{after-help}",
-    after_help = concat!(
-        "Use a help or version flag before a task for this binary's own output.\n",
-        "Combining a version selector with ", cyan!("-q"), "/", cyan!("--quiet"), " selects concise output.\n",
-        "After a task name they are forwarded to the task instead (use ", cyan!("--"), " to force forwarding).",
-    ),
-    styles = HELP_STYLES,
-    arg_required_else_help = false,
-    disable_version_flag = true,
-)]
-pub(crate) struct RunAliasCli {
-    #[command(flatten)]
-    pub global: GlobalOpts,
-
-    /// Task name or command. When omitted, prints project info.
-    #[arg(add = ArgValueCandidates::new(task_candidates))]
-    pub task: Option<String>,
-
-    #[arg(
-        trailing_var_arg = true,
-        allow_hyphen_values = true,
-        add = ArgValueCandidates::new(chain_args_candidates),
-        help = ARGS_HELP,
-    )]
-    pub args: Vec<String>,
-
-    #[command(flatten)]
-    pub mode: ChainModeFlags,
-
-    #[command(flatten, next_help_heading = "Version output")]
-    pub version: VersionOpts,
-}
-
-/// `-s` and `-p`.
-#[derive(Debug, Args, Default, Clone, Copy)]
-pub(crate) struct ChainModeFlags {
-    /// Chain tasks in order
-    #[arg(short = 's', long, display_order = help_order::CHAIN_MODE)]
-    pub sequential: bool,
-    /// Chain tasks concurrently
-    #[arg(short = 'p', long, display_order = help_order::CHAIN_MODE + 1)]
-    pub parallel: bool,
-}
-
-impl ChainModeFlags {
-    /// The chain mode the flags select, if any.
-    pub(crate) const fn mode(self) -> Option<crate::chain::ChainMode> {
-        if self.parallel {
-            Some(crate::chain::ChainMode::Parallel)
-        } else if self.sequential {
-            Some(crate::chain::ChainMode::Sequential)
-        } else {
-            None
-        }
     }
 }

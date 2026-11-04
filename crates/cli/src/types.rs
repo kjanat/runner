@@ -68,10 +68,11 @@ impl Task {
     /// The spelling `run` accepts for this task: `member:name` for member
     /// tasks, the bare name otherwise.
     pub(crate) fn display_name(&self) -> Cow<'_, str> {
-        self.member.as_ref().map_or_else(
-            || Cow::Borrowed(self.name.as_str()),
-            |member| Cow::Owned(format!("{}:{}", member.label, self.name)),
-        )
+        self.member
+            .as_ref()
+            .map_or(Cow::Borrowed(self.name.as_str()), |member| {
+                Cow::Owned(format!("{}:{}", member.label, self.name))
+            })
     }
 
     /// Whether `other` lives in the same scope (root or the same member).
