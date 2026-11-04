@@ -120,12 +120,7 @@ fn sequential_chain_emits_per_task_timing_on_stderr() {
     let output = runner_command()
         .arg("--dir")
         .arg(fixture("chain-sequential"))
-        .args([
-            "run",
-            "-s",
-            "build",
-            "test",
-        ])
+        .args(["run", "-s", "build", "test"])
         // Scrub GITHUB_ACTIONS so the timing line shape is deterministic
         // regardless of the host CI environment.
         .env_remove(actions_rs::env::vars::GITHUB_ACTIONS)

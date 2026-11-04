@@ -2,8 +2,8 @@
 # installed? Pure Alpine, no libc6-compat to mask a wrong choice. The build is
 # the test. Uses the working-tree resolver against registry platform packages.
 #
-#   docker build -f tests/docker/musl-libc-select.Dockerfile \
-#     --build-arg VER=0.27.0 --progress=plain --no-cache -t runner-musl-libc-test .
+# docker build -f tests/docker/musl-libc-select.Dockerfile \
+# --build-arg VER=0.27.0 --progress=plain --no-cache -t runner-musl-libc-test .
 # Index digest, not a per-platform one: the build has to resolve to the host's
 # architecture. A `linux/386` manifest digest here makes `process.arch` report
 # `ia32`, and no Linux GNU/musl pair is published for it.
