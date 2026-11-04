@@ -92,12 +92,12 @@
     {
       "name": "f",
       "source": "cargo",
-      "alias_of": "run --quiet --bin run -- --pm npm dprint fmt"
+      "alias_of": "run --quiet --bin run -- --pm npm kfmt"
     },
     {
       "name": "format",
       "source": "cargo",
-      "alias_of": "run --quiet --bin run -- --pm npm dprint fmt"
+      "alias_of": "run --quiet --bin run -- --pm npm kfmt"
     },
     {
       "name": "i",

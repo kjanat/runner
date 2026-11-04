@@ -17,7 +17,7 @@ to the working-tree build.
 ```sh
 cargo test --workspace
 cargo clippy --workspace --all-targets --all-features -- -D clippy::all
-dprint check        # or: cargo fmt --check
+kprint check        # or: cargo fmt --check
 ```
 
 Cargo aliases live in `.cargo/config.toml` (`t`, `cl`, `l`/`lint`, …).

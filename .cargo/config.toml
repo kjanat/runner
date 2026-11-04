@@ -17,7 +17,7 @@ rr  = "run --release"
 
 # other
 comp   = "bin-runner -- completions"
-format = "bin-run -- --pm npm dprint fmt"
+format = "bin-run -- --pm npm kfmt"
 lint   = "cl -- -D warnings -D clippy::all"
 meta   = "metadata --format-version 1"
 

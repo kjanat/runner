@@ -7,16 +7,17 @@
 		"packaging/npm/facade"
 	],
 	"scripts": {
-		"fmt": "dprint fmt",
-		"fmt:check": "dprint check",
-		"fmt:update": "dprint config update --yes",
+		"fmt": "kfmt",
+		"fmt:check": "kprint check",
+		"fmt:update": "kprint config update --yes",
 		"test:facade": "bun test packaging/npm/facade/test/",
 		"typecheck": "tsc --noEmit"
 	},
 	"devDependencies": {
+		"@kjanat/fmt": "catalog:",
+		"@kprint/kprint": "catalog:",
 		"@types/bun": "catalog:",
 		"@types/node": "catalog:",
-		"dprint": "catalog:",
 		"runner-run": "catalog:",
 		"typescript": "catalog:"
 	},
@@ -29,9 +30,10 @@
 		"@biomejs/biome": "^2.5",
 		"@types/bun": "^1.4",
 		"@types/node": ">=22.18.0",
-		"dprint": "^0.57.4",
 		"runner-run": "npm:runner-run@^0.27",
 		"typescript": "^7",
-		"wrangler": "^4"
+		"wrangler": "^4",
+		"@kjanat/fmt": "^0.60.6",
+		"@kprint/kprint": "^0.60.6"
 	}
 }

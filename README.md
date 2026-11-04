@@ -54,8 +54,8 @@ run 0.12.2
   cargo           cl                   clippy --all-targets --all-features
   cargo           comp                 run --quiet --bin runner -- completions
   cargo           d                    doc
-  cargo           f                    run --quiet --bin run -- --pm npm dprint fmt
-  cargo           format               run --quiet --bin run -- --pm npm dprint fmt
+  cargo           f                    run --quiet --bin run -- --pm npm kfmt
+  cargo           format               run --quiet --bin run -- --pm npm kfmt
   cargo           i                    install --path crates/cli
   cargo           l                    clippy --all-targets --all-features -- -D warnings -D clippy::all
   cargo           lint                 clippy --all-targets --all-features -- -D warnings -D clippy::all
@@ -92,8 +92,8 @@ c             -- → check                                                      
 cl            -- → clippy --all-targets --all-features                                rm            -- → remove
 comp          -- → run --quiet --bin runner -- completions                            rq            -- → run --quiet
 d             -- → doc                                                                rr            -- → run --release
-f             -- → run --quiet --bin run -- --pm npm dprint fmt                       cargo:runner  -- → run --quiet --bin runner
-format        -- → run --quiet --bin run -- --pm npm dprint fmt                       schema        -- → run --quiet -- schema
+f             -- → run --quiet --bin run -- --pm npm kfmt                             cargo:runner  -- → run --quiet --bin runner
+format        -- → run --quiet --bin run -- --pm npm kfmt                             schema        -- → run --quiet -- schema
 i             -- → install --path crates/cli                                          t             -- → test
 l             -- → clippy --all-targets --all-features -- -D warnings -D clippy::all
 -- Options --

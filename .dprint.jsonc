@@ -42,21 +42,14 @@
 		"cwd": "${configDir}",
 		"cacheKey": "1",
 		"timeout": 30,
-		"commands": [{
-			"command": "tombi format - --stdin-filename {{file_path}}",
-			"exts": ["toml"],
-			"cacheKeyFiles": ["tombi.toml"],
-			"setupCommand": "npm i -g tombi",
-		}, {
-			"command": "rustup run nightly rustfmt --emit stdout",
-			"exts": ["rs"],
-			"cacheKeyFiles": ["rustfmt.toml", "rust-toolchain.toml", ".cargo/config.toml"],
-			"setupCommand": "rustup component add rustfmt --toolchain nightly",
-		}, {
-			"command": "just --dump --justfile {{file_path}}",
-			"fileNames": ["justfile"],
-			"setupCommand": "npm i -g rust-just",
-		}],
+		"commands": [
+			{
+				"command": "rustup run nightly rustfmt --emit stdout",
+				"exts": ["rs"],
+				"cacheKeyFiles": ["rustfmt.toml", "rust-toolchain.toml", ".cargo/config.toml"],
+				"setupCommand": "rustup component add rustfmt --toolchain nightly",
+			},
+		],
 	},
 	"excludes": [
 		"**/*.lock",
@@ -80,5 +73,6 @@
 		"npm:dprint-plugin-markup@0.27.5",
 		"npm:dprint-plugin-yaml@0.6.0",
 		"npm:@dprint/exec@0.7.3/plugin.json@704701df449dd7e942a71144773778ac529d68c2e4657bfc236d393b898b9a67",
+		"https://plugins.dprint.dev/kjanat/tombi-0.1.1.wasm",
 	],
 }

@@ -15,7 +15,7 @@
 		"check": "biome check",
 		"deploy": "run -s build wrangler:deploy",
 		"dev": "bun run dev.ts",
-		"fmt": "bunx dprint fmt",
+		"fmt": "kfmt",
 		"lint": "biome lint",
 		"prestart": "run build",
 		"start": "run wrangler:preview",
@@ -27,6 +27,7 @@
 	},
 	"devDependencies": {
 		"@biomejs/biome": "catalog:",
+		"@kjanat/fmt": "catalog:",
 		"@types/bun": "catalog:",
 		"runner-run": "catalog:",
 		"typescript": "catalog:",

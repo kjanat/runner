@@ -1,7 +1,7 @@
 {
 	"formatter": [
 		{ "language_server": { "name": "dprint" } },
-		{ "external": { "command": "dprint", "arguments": ["fmt", "--stdin", "{buffer_path}"] } },
+		{ "external": { "command": "kprint", "arguments": ["fmt", "--stdin", "{buffer_path}"] } },
 	],
 	"prettier": { "allowed": false },
 	"lsp": {
