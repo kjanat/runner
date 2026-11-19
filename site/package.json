@@ -33,7 +33,7 @@
 		"typescript": "catalog:",
 		"wrangler": "catalog:"
 	},
-	"packageManager": "bun@1.4.4",
+	"packageManager": "bun@1.4.5",
 	"volta": {
 		"extends": "../package.json"
 	}
